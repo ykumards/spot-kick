@@ -1,0 +1,232 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Spot Kick</title>
+<style>
+  :root { --paper:#f4efe6; --ink:#111; --tap:#6fbf73; --kick:#f3b13f; --boot:#e5513f; --card:#f6f4ef; --muted:#8a8a8a; }
+  html,body { margin:0; height:100%; background:#fff; font-family:-apple-system, "SF Pro Text", system-ui, sans-serif; color:var(--ink); user-select:none; -webkit-user-select:none; overflow:hidden; }
+  .marker { font-family:"Marker Felt","Comic Sans MS","Chalkboard SE",sans-serif; }
+  #stage { position:relative; width:100%; height:300px; overflow:hidden; background:var(--paper); }
+  #title { position:absolute; left:0; right:0; top:8px; text-align:center; font-size:26px; letter-spacing:1px; font-weight:700; }
+  #label { position:absolute; left:0; right:0; top:40px; text-align:center; font-size:12px; letter-spacing:.4px; color:var(--muted); }
+  #leg { position:absolute; left:50%; top:62px; font-size:190px; line-height:1; transform-origin:50% 12%; transform:translateX(-50%) rotate(0deg); cursor:grab; touch-action:none; filter:drop-shadow(4px 4px 0 rgba(0,0,0,.22)); }
+  #leg.dragging { cursor:grabbing; }
+  #meter { position:absolute; left:50%; top:85px; width:270px; height:270px; transform:translate(-50%,-50%); border-radius:50%;
+           background:conic-gradient(from 180deg, var(--tap) 0 36deg, var(--kick) 36deg 73deg, var(--boot) 73deg 110deg, transparent 110deg 360deg);
+           -webkit-mask:radial-gradient(circle, transparent 116px, #000 117px, #000 134px, transparent 135px); opacity:.35; pointer-events:none; }
+  #burst { position:absolute; left:50%; top:190px; transform:translate(-50%,-50%) rotate(-8deg) scale(0); font-size:44px; font-weight:900; color:#fff; -webkit-text-stroke:3px #111; text-shadow:4px 4px 0 #111; pointer-events:none; transition:transform .12s cubic-bezier(.2,1.6,.4,1); }
+  #burst.show { transform:translate(-50%,-50%) rotate(-8deg) scale(1); }
+  #whoosh { position:absolute; left:55%; top:230px; font-size:48px; opacity:0; transform:scaleX(2.5); pointer-events:none; }
+  #ball { position:absolute; width:56px; height:56px; left:0; top:0; pointer-events:none; will-change:transform; font-size:50px; line-height:56px; text-align:center; filter:drop-shadow(3px 4px 0 rgba(0,0,0,.25)); }
+  #ball img { display:none; width:76px; height:76px; margin:-10px; clip-path:circle(27px at 50% 50%); }
+  body.pirate #ball img { display:block; } body.pirate #ball span { display:none; }
+  #panel { display:flex; flex-direction:column; gap:12px; padding:14px 16px 12px; height:calc(100% - 300px); box-sizing:border-box; border-top:1px solid #e6e2da; background:#fff; font-size:13px; line-height:1.4; color:#222; }
+  .np { display:flex; align-items:center; gap:12px; padding:10px 12px; background:var(--card); border-radius:14px; }
+  .np .meta { flex:1; min-width:0; }
+  .np .title { font-size:14px; font-weight:600; color:#111; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .np .artist { font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .np .bar { height:3px; background:#e4e0d8; border-radius:2px; margin-top:6px; overflow:hidden; } .np .bar i { display:block; height:100%; background:#1db954; width:0; }
+  .tp { display:flex; gap:6px; }
+  .tp button { width:30px; height:30px; border:0; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.12); cursor:pointer; padding:0; color:#222; display:flex; align-items:center; justify-content:center; }
+  .tp button svg { width:14px; height:14px; } .tp button:active { background:#eee; } .tp button.on { background:#111; color:#fff; }
+  #content { flex:1; min-height:0; }
+  .head { font-family:"Marker Felt","Comic Sans MS","Chalkboard SE",sans-serif; font-size:28px; line-height:1.1; margin:2px 0 2px; letter-spacing:.5px; }
+  .head.returned { color:#2a7a3b; } .head.bent { color:#b8730f; } .head.followed { color:#c0392b; } .head.wait { color:#333; } .head.wide { color:#c0392b; }
+  .sub { font-size:13px; color:#666; }
+  .sub b { color:#222; font-weight:600; }
+  .chips { display:flex; gap:6px; margin:10px 0 0; flex-wrap:wrap; }
+  .chip { font-size:11px; padding:3px 9px; border-radius:999px; background:var(--card); color:#444; }
+  .chip.tap { background:#dff1e0; } .chip.kick { background:#fbe9c4; } .chip.boot { background:#f8d3cd; }
+  .row { display:flex; align-items:center; justify-content:space-between; }
+  .hint { font-size:11px; color:var(--muted); }
+  .icons { display:flex; gap:14px; }
+  .gear { cursor:pointer; color:#b0b0b0; display:inline-flex; } .gear svg { width:16px; height:16px; } .gear:hover { color:#222; }
+  .confirm { font-size:12px; color:#444; display:flex; gap:10px; align-items:center; }
+  .confirm b { cursor:pointer; color:#c0392b; } .confirm span { cursor:pointer; color:#888; }
+  #knobs { display:none; flex:1; min-height:0; padding:10px 12px; background:var(--card); border-radius:12px; font-size:12px; color:#555; overflow:auto; }
+  #panel.settings #knobs { display:block; } #panel.settings #content { display:none; }
+  #panel.settings #icoGear { color:#222; }
+  #knobs label { display:flex; align-items:center; gap:8px; margin:4px 0; }
+  #knobs input[type=range] { flex:1; }
+  #knobs span { width:52px; text-align:right; color:#222; }
+  .log { font-size:11px; color:#aaa; margin-top:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+</style></head>
+<body>
+<div id="stage">
+  <div id="title" class="marker">Spot Kick</div>
+  <div id="label">wind the leg back</div>
+  <div id="meter"></div>
+  <div id="leg">🦵</div>
+  <div id="ball"><span>⚽</span><img src="ball.png" alt=""></div>
+  <div id="whoosh">≋</div>
+  <div id="burst">THWACK</div>
+</div>
+<div id="panel">
+  <div class="np">
+    <div class="meta"><div class="title" id="npTitle">loading…</div><div class="artist" id="npArtist"></div><div class="bar"><i id="npBar"></i></div></div>
+    <div class="tp"><button id="btnPlay" onclick="transport('playpause')" title="play / pause"></button><button id="btnNext" onclick="transport('next')" title="next"></button><button id="btnMute" onclick="transport('mute')" title="mute"></button></div>
+  </div>
+  <div id="content"><div class="head wait">Wind it up</div><div class="sub">A little for a tap, more for a kick, all the way for a boot.</div></div>
+  <div id="knobs">
+    <label>dig deeper <input type="range" id="dig" min="0" max="2" step="1" value="1" oninput="knobs()"><span id="digV">hits off</span></label>
+    <label title="the ball becomes something greener. Your call, not ours."><input type="checkbox" id="pirate" onchange="pirate(this.checked)"> 🏴‍☠️ pirate ball</label>
+    <div class="log" id="log"></div>
+  </div>
+  <div class="row">
+    <span class="hint" id="hint"></span>
+    <span class="icons" id="icons"><span class="gear" id="icoGear" onclick="toggleSettings()" title="settings"></span><span class="gear" id="icoPower" onclick="askQuit()" title="quit Spot Kick"></span></span>
+  </div>
+</div>
+<script>
+(function () {  // native bridge: JS -> Python via WKScriptMessageHandler, Python -> JS via __resolve
+  const pending = {}; let seq = 0;
+  window.__resolve = (id, ok, payload) => { const p = pending[id]; if (!p) return; delete pending[id]; (ok ? p.resolve : p.reject)(payload); };
+  const call = (method, args) => new Promise((resolve, reject) => { const id = ++seq; pending[id] = {resolve, reject}; window.webkit.messageHandlers.api.postMessage({id, method, args}); });
+  window.api = new Proxy({}, { get: (_, method) => (...args) => call(method, args) });
+})();
+const I = {
+  play: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7 5v14l12-7z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
+  next: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M6 5v14l9-7z"/><rect x="16" y="5" width="2.5" height="14" rx="1"/></svg>',
+  vol: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" fill="currentColor"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
+  mute: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" fill="currentColor"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
+};
+document.getElementById('btnPlay').innerHTML = I.play; document.getElementById('btnNext').innerHTML = I.next; document.getElementById('btnMute').innerHTML = I.vol;
+document.getElementById('icoGear').innerHTML = I.gear; document.getElementById('icoPower').innerHTML = I.power;
+function toggleSettings() { document.getElementById('panel').classList.toggle('settings'); }
+function askQuit() {
+  const el = document.getElementById('icons');
+  el.innerHTML = `<span class="confirm">Quit Spot Kick? <b onclick="api.quit()">Yes</b><span onclick="unaskQuit()">No</span></span>`;
+}
+function unaskQuit() {
+  const el = document.getElementById('icons');
+  el.innerHTML = `<span class="gear" id="icoGear" onclick="toggleSettings()" title="settings">${I.gear}</span><span class="gear" id="icoPower" onclick="askQuit()" title="quit Spot Kick">${I.power}</span>`;
+}
+const MAX = 110;
+const leg = document.getElementById('leg'), label = document.getElementById('label'), burst = document.getElementById('burst');
+const whoosh = document.getElementById('whoosh'), meter = document.getElementById('meter');
+
+// ---- the ball: rests at the toe; the swing launches it; it ricochets while the brain thinks; then rolls home
+const ball = document.getElementById('ball'), stage = document.getElementById('stage');
+const B = { x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0, mode: 'rest', home: {x: 0, y: 0}, bounces: 0 };
+function ballHome() { B.home = { x: stage.clientWidth / 2 + 2, y: stage.clientHeight - 90 }; }
+function ballDraw() { ball.style.transform = `translate(${B.x}px, ${B.y}px) rotate(${B.rot}deg)`; }
+function ballRest() { ballHome(); B.x = B.home.x; B.y = B.home.y; B.vx = B.vy = B.vr = 0; B.mode = 'rest'; ballDraw(); }
+function ballKick(magnitude) {
+  B.mode = 'fly'; B.bounces = 0;
+  const v = (6 + 14 * magnitude) * (0.85 + Math.random() * 0.3);
+  const ang = -(20 + Math.random() * 50) * Math.PI / 180;
+  B.vx = v * Math.cos(ang); B.vy = v * Math.sin(ang);
+  B.vr = (12 + 20 * magnitude) * (Math.random() < 0.5 ? -1 : 1) * (0.7 + Math.random() * 0.6);
+}
+function ballReturn() { B.mode = 'return'; }
+(function ballLoop() {
+  const W = stage.clientWidth, H = stage.clientHeight, S = 56, e = 0.92;
+  if (B.mode === 'fly') {
+    B.x += B.vx; B.y += B.vy; B.rot += B.vr;
+    if (B.x < 0) { B.x = 0; B.vx = -B.vx * e; B.vr = -B.vr; B.bounces++; } if (B.x > W - S) { B.x = W - S; B.vx = -B.vx * e; B.vr = -B.vr; B.bounces++; }
+    if (B.y < 0) { B.y = 0; B.vy = -B.vy * e; B.bounces++; } if (B.y > H - S) { B.y = H - S; B.vy = -B.vy * e; B.bounces++; }
+    const sp = Math.hypot(B.vx, B.vy); if (sp < 4) { const k = 4 / Math.max(sp, 1e-3); B.vx *= k; B.vy *= k; }
+    if (Math.random() < 0.02) { const j = (Math.random() - 0.5) * 0.35; const c = Math.cos(j), sn = Math.sin(j); const vx = B.vx * c - B.vy * sn; B.vy = B.vx * sn + B.vy * c; B.vx = vx; }
+  } else if (B.mode === 'return') {
+    B.x += (B.home.x - B.x) * 0.12; B.y += (B.home.y - B.y) * 0.12; B.rot += (0 - (B.rot % 360)) * 0.12;
+    if (Math.abs(B.home.x - B.x) < 0.5 && Math.abs(B.home.y - B.y) < 0.5) ballRest();
+  }
+  ballDraw(); requestAnimationFrame(ballLoop);
+})();
+window.addEventListener('resize', () => { if (B.mode === 'rest') ballRest(); });
+setTimeout(ballRest, 50);
+
+// ---- the leg
+let angle = 0, dragging = false, startPointer = 0, startAngle = 0, busy = false, showing = null;
+function rotateLeg(deg) { leg.style.transform = `translateX(-50%) rotate(${deg}deg)`; }
+function strengthOf(m) { return m < 0.33 ? 'tap' : m < 0.66 ? 'kick' : 'boot'; }
+function setAngle(a) {
+  angle = Math.max(0, Math.min(MAX, a)); rotateLeg(angle); meter.style.opacity = 0.35 + 0.55 * (angle / MAX);
+  const m = angle / MAX;
+  label.textContent = angle < 6 ? 'wind the leg back' : `${strengthOf(m).toUpperCase()} · ${Math.round(m*100)}%`;
+}
+function pivot() { const r = meter.getBoundingClientRect(); return {x: r.left + r.width/2, y: r.top + r.height/2}; }
+function pointerAngle(ev) { const c = pivot(); return Math.atan2(ev.clientY - c.y, ev.clientX - c.x) * 180 / Math.PI; }
+leg.addEventListener('pointerdown', ev => { if (busy) return; dragging = true; leg.classList.add('dragging'); startPointer = pointerAngle(ev); startAngle = angle; leg.setPointerCapture(ev.pointerId); });
+function unwrap(d) { return ((d + 540) % 360) - 180; }   // shortest signed delta: no 360° jump when the cursor crosses the seam
+leg.addEventListener('pointermove', ev => { if (!dragging) return; const d = unwrap(pointerAngle(ev) - startPointer); startPointer += d; startAngle += d; setAngle(startAngle); });
+function endDrag() { if (!dragging) return; dragging = false; leg.classList.remove('dragging'); release(); }
+leg.addEventListener('pointerup', endDrag);
+leg.addEventListener('pointercancel', endDrag);
+
+function release() {
+  if (angle < 6) { setAngle(0); return; }
+  const m = angle / MAX, strength = strengthOf(m);
+  const a0 = angle, t0 = performance.now(); busy = true;
+  (function swing(now) {
+    const t = (now - t0) / 380;
+    if (t < 1) { const e = 1 - Math.pow(1 - t, 3); const a = a0 - (a0 + 28) * e; rotateLeg(a); whoosh.style.opacity = t > .4 ? 1 : 0;
+      if (a <= 4 && B.mode === 'rest') ballKick(m); requestAnimationFrame(swing); }
+    else { burst.textContent = strength === 'tap' ? 'tap' : strength === 'kick' ? 'KICK!' : 'BOOOT!!'; burst.classList.add('show');
+      setTimeout(() => { burst.classList.remove('show'); whoosh.style.opacity = 0; setAngle(0); }, 700); kick(m, strength); }
+  })(t0);
+}
+const QUIPS = {
+  tap: ['a gentle nudge', 'checking the wind', 'asking the ref', 'just a little poke', 'looking two songs ahead'],
+  kick: ['leaving the pocket', 'scouting the next ridge', 'consulting the record shop', 'measuring the run-up', 'finding the seam'],
+  boot: ['calling Detroit', 'consulting the outer rim', 'checking passports', 'winding up properly', 'this one might not come back', 'sending it to the moon'],
+};
+let quipTimer = null;
+function startShow(strength) {
+  const t0 = performance.now(); let i = 0;
+  const draw = () => { const q = QUIPS[strength][i++ % QUIPS[strength].length];
+    setContent(`<div class="head wait">${strength}…</div><div class="sub">${q} · ${((performance.now()-t0)/1000).toFixed(0)} s · ${B.bounces} bounces</div>`); };
+  draw(); quipTimer = setInterval(draw, 1400);
+}
+function stopShow() { clearInterval(quipTimer); quipTimer = null; }
+async function kick(magnitude, strength) {
+  startShow(strength);
+  try {
+    const k = await api.kick(magnitude);
+    stopShow();
+    burst.textContent = 'GOAL'; burst.classList.add('show'); setTimeout(() => burst.classList.remove('show'), 900);
+    const n = k.candidates.length;
+    showing = `<div class="head wait">Kicked</div><div class="sub"><b>${k.track.artist} — ${k.track.title}</b><br>${k.direction}</div>
+      <div class="chips"><span class="chip ${k.band}">${k.band} · landed ${k.rel.toFixed(2)} of ${k.target_rel.toFixed(2)}</span><span class="chip">picked from ${n}</span>${k.dose > 1 ? `<span class="chip">+${k.dose - 1} to follow</span>` : ''}</div>`;
+    setContent(showing);
+    setTimeout(() => { showing = null; }, 12000);
+  } catch (e) { stopShow(); burst.textContent = 'WIDE'; burst.classList.add('show'); setTimeout(() => burst.classList.remove('show'), 900);
+    showing = `<div class="head wide">Wide</div><div class="sub">${String(e).slice(0, 160)}</div>`; setContent(showing); setTimeout(() => { showing = null; }, 8000); }
+  ballReturn(); busy = false; setTimeout(tick, 1500);
+}
+async function transport(cmd) { try { paint(await api.transport(cmd)); } catch (e) {} setTimeout(tick, 400); }
+function paint(p) { if (!p) return; document.getElementById('btnPlay').innerHTML = p.state === 'playing' ? I.pause : I.play; const m = document.getElementById('btnMute'); m.innerHTML = p.muted ? I.mute : I.vol; m.classList.toggle('on', !!p.muted); }
+function pirate(on) { document.body.classList.toggle('pirate', !!on); try { localStorage.setItem('pirate', on ? '1' : '0'); } catch (e) {} }
+try { if (localStorage.getItem('pirate') === '1') { document.getElementById('pirate').checked = true; pirate(true); } } catch (e) {}
+async function knobs() { const d = document.getElementById('dig').value; document.getElementById('digV').textContent = ['any', 'hits off', 'deep'][Number(d)]; await api.set_dig(Number(d)); }
+function renderKick(k, pool) {
+  const ready = pool ? (pool.ready ? `${pool.ready} pick${pool.ready === 1 ? '' : 's'} ready` : pool.building ? 'finding picks…' : '') : '';
+  document.getElementById('hint').textContent = ready;
+  if (showing) return;
+  if (!k) { setContent(`<div class="head wait">Wind it up</div><div class="sub">A little for a tap, more for a kick, all the way for a boot.</div>`); return; }
+  const words = { listening: 'Listening…', returned: 'Returned', bent: 'Bent', followed: 'Followed' };
+  const f = k.followed || 0;
+  const sub = k.n_since < 2
+    ? `${k.n_since} song${k.n_since === 1 ? '' : 's'} since the kick${k.forced_left ? ` · ${k.forced_left} more to force` : ''}`
+    : `${k.n_since} songs since · Spotify went <b>${Math.round(100 * Math.max(0, Math.min(1.2, f)))}%</b> of the way with you`;
+  setContent(`<div class="head ${k.verdict}">${words[k.verdict] || k.verdict}</div><div class="sub">${sub}</div>
+    <div class="chips"><span class="chip ${k.band}">${k.strength} → ${k.track.artist}</span><span class="chip">landed ${Math.max(0, k.rel).toFixed(2)}</span>${k.popularity != null ? `<span class="chip">🔥 ${k.popularity}</span>` : ''}</div>`);
+}
+function setContent(html) { document.getElementById('content').innerHTML = html; }
+async function tick() {
+  try { const s = await api.status();
+    const tt = document.getElementById('npTitle'), ta = document.getElementById('npArtist'), bar = document.getElementById('npBar');
+    if (!s.ready) { tt.textContent = s.error || 'loading the ears…'; ta.textContent = (s.log || []).slice(-1)[0] || ''; return; }
+    if (s.busy) return;
+    if (s.error) { tt.textContent = 'Spotify'; ta.textContent = s.error; }
+    else if (s.track) { tt.textContent = s.track.name; ta.textContent = s.track.artist + (s.track.album ? ' · ' + s.track.album : ''); bar.style.width = s.track.duration ? `${Math.min(100, 100 * s.track.position / s.track.duration)}%` : '0'; }
+    else { tt.textContent = 'nothing playing'; ta.textContent = 'start a song in Spotify'; bar.style.width = '0'; }
+    paint(s.player);
+    document.getElementById('log').textContent = (s.log || []).slice(-1)[0] || '';
+    if (!busy) renderKick(s.kick, s.pool);
+  } catch (e) {}
+}
+window.addEventListener('DOMContentLoaded', () => { tick(); setInterval(tick, 2500); });
+</script>
+</body></html>

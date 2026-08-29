@@ -1,0 +1,35 @@
+[project]
+name = "spotkick"
+version = "0.1.0"
+description = "A menubar leg that kicks your Spotify queue a measured distance, and reports whether the algorithm follows."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=1.26",
+  "requests>=2.31",
+  "onnxruntime>=1.18",
+]
+
+[project.optional-dependencies]
+export = ["torch>=2.2", "transformers>=4.40", "onnx>=1.16"]   # dev only: scripts/export_clap_onnx.py
+app = ["pyobjc-framework-Cocoa>=10", "pyobjc-framework-WebKit>=10"]
+openai = ["openai>=1.30"]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+spotkick = "spotkick.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["spotkick*"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
