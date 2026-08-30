@@ -5,24 +5,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# One knob: how hard the kick is. A harder kick is farther in sound *and* deeper below the surface, because that is
+# what "farther" means to a listener: a small step may be a song they half know; a boot is one they would never meet.
 REACH_TEXT = {
-    "near": "a small step: same mood, one notch more adventurous",
-    "adjacent": "a real kick: leave the current pocket for an adjacent one, keep one thread of continuity",
+    "near": "a small step: same mood, one notch more adventurous; a known song is fine if it fits",
+    "adjacent": (
+        "a real kick: leave the current pocket for an adjacent one, keep one thread of continuity; skip the obvious — "
+        "no 'best of the genre' pick, no artist's single most famous track, prefer album cuts and moderate fame"
+    ),
     "far": (
         "a boot: a distant but musically defensible destination, the kind of thing this listener would never be "
-        "recommended"
-    ),
-}
-
-DIG = {
-    0: "",
-    1: (
-        "Skip the obvious: no song that would sit on a 'best of the genre' list, no artist's single most famous track. "
-        "Prefer album cuts and artists of moderate fame."
-    ),
-    2: (
-        "Go deep: nothing you'd expect on a mainstream playlist. Prefer lesser-known artists, deep cuts, regional "
-        "scenes, reissues — a song a serious fan of the direction would name, not a tourist."
+        "recommended; go deep — lesser-known artists, deep cuts, regional scenes, reissues, a song a serious fan of "
+        "the direction would name, not a tourist"
     ),
 }
 
@@ -74,10 +68,9 @@ class Context:
     rejected: list[str] = field(default_factory=list)
     directions: list[str] = field(default_factory=list)
     kicked_artists: list[str] = field(default_factory=list)
-    taste: list[str] = field(default_factory=list)  # taste modes in words, when the Mind has them
 
     @classmethod
-    def from_store(cls, store, *, taste: list[str] | None = None) -> Context:
+    def from_store(cls, store) -> Context:
         return cls(
             recent=store.recent(RECENT_PLAYS),
             top_recent=store.top_artists(days=TOP_RECENT_DAYS, n=TOP_ARTISTS),
@@ -86,7 +79,6 @@ class Context:
             rejected=store.rejected(days=REJECTED_DAYS, n=REJECTED_TRACKS),
             directions=store.directions(KICKED_DIRECTIONS),
             kicked_artists=store.kicked_artists(KICKED_ARTISTS),
-            taste=list(taste or []),
         )
 
     def recent_play_lines(self) -> list[str]:
@@ -106,8 +98,6 @@ class Context:
             lines.append("Most played artists, last 30 days: " + artist_counts(self.top_recent))
         if self.top_all and artist_names(self.top_all) != artist_names(self.top_recent):
             lines.append("Most played artists, all time: " + artist_counts(self.top_all))
-        if self.taste:
-            lines.append("Their taste, in modes: " + "; ".join(self.taste))
         if self.loved:
             lines.append("Loved: " + "; ".join(self.loved))
         if self.rejected:
@@ -128,25 +118,48 @@ def artist_names(ranked: list[tuple[str, int]]) -> list[str]:
 
 
 def lean_line(lean: str) -> str:
-    """The listener's lean bounds every pick; the reach still varies inside it (a 'far' pick is far *within* it)."""
+    """The listener's lean bounds every pick and outranks the rest of the prompt: 'top 50' must not lose to a reach's
+    'nothing famous', and a 'far' pick is far *within* the lean, not outside it."""
     cleaned = " ".join(lean.split())
     instruction = f'The listener asked for this lean, and every pick must stay inside it: "{cleaned}".'
-    return instruction + " Vary the reach inside it."
+    priority = (
+        " Take it literally. Where it conflicts with anything else here — how famous or obscure a pick should be, "
+        "how far a reach goes — the lean wins. Vary the reach inside it."
+    )
+    return instruction + priority
+
+
+MISSES_SHOWN = 6
+BAND_WORD = {"tap": "a small step", "kick": "a kick", "boot": "a boot"}
+
+
+def misses_line(misses: list[dict], reach: str) -> str:
+    """What the audio ruler made of the last picks at this reach: the brain named them, the measurement disagreed.
+    Telling it exactly which songs landed where is what lets it correct instead of repeating itself."""
+    landed = "; ".join(
+        f"{miss['artist']} — {miss['title']} measured as {BAND_WORD.get(miss['band'], miss['band'])}"
+        for miss in misses[-MISSES_SHOWN:]
+    )
+    return (
+        f"Your earlier picks for '{reach}' did not land: {landed}. Those are too close in sound to what the listener "
+        "plays. Go decisively further from all of them — another tradition, era, instrumentation, tempo or language — "
+        "and do not propose them again."
+    )
 
 
 def candidates_prompt(
     context: Context,
     *,
     n: int = 6,
-    dig: int = 1,
-    direction_hint: str | None = None,
     rejects: list[str] | None = None,
     reach: str | None = None,
     lean: str | None = None,
+    misses: list[dict] | None = None,
 ) -> str:
     """One call, several graded candidates in distinct directions. A separate step measures them and picks.
 
     With `reach`, every candidate is asked for at that one reach: the top-up for a band the pool has run out of.
+    With `misses`, the earlier picks at that reach and where each actually measured, so the brain corrects.
     With `lean`, the listener's own words (a mood, a language, an era) bound every pick."""
     per_reach = max(1, n // REACH_GROUPS)
     head = (
@@ -154,17 +167,10 @@ def candidates_prompt(
         "each candidate's audio distance from their current listening and plays the one that lands where the listener "
         "aimed; you only name real, existing songs."
     )
-    if direction_hint:
-        ask = (
-            f'Propose {n} real songs that continue in ONE direction: "{direction_hint}". Order them so each is a '
-            "plausible next step from the previous; the first should be the closest to that direction's starting song. "
-            "Label each 'reach' as adjacent."
-        )
-    elif reach:
-        ask = (
-            f"Propose {n} real songs, each in a DIFFERENT direction, all labelled '{reach}' ({REACH_TEXT[reach]}). "
-            "Earlier picks at this reach measured closer to the listener than intended, so lean further out."
-        )
+    if reach:
+        ask = f"Propose {n} real songs, each in a DIFFERENT direction, all labelled '{reach}' ({REACH_TEXT[reach]})."
+        if misses:
+            ask += " " + misses_line(misses, reach)
     else:
         near_ask = f"{per_reach} labelled 'near' ({REACH_TEXT['near']})"
         adjacent_ask = f"{per_reach} 'adjacent' ({REACH_TEXT['adjacent']})"
@@ -173,8 +179,7 @@ def candidates_prompt(
         ask = f"Propose {total} real songs, each in a DIFFERENT direction: {near_ask}, {adjacent_ask}, {far_ask}."
     rules = (
         "Spotify's autoplay will continue FROM the chosen song, so each needs a strong, coherent identity a "
-        "recommender can build a queue around — not a novelty, not a one-off. Never repeat anything listed above. "
-        + DIG[dig]
+        "recommender can build a queue around — not a novelty, not a one-off. Never repeat anything listed above."
     )
     tail = "For each: a 3-6 word direction, the real artist and title, and a one-line why. No links, no markdown."
     parts = [head, "", *context.lines(), ""]

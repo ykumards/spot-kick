@@ -4,7 +4,7 @@
   :root { --paper:#f4efe6; --ink:#111; --tap:#6fbf73; --kick:#f3b13f; --boot:#e5513f; --card:#f6f4ef; --muted:#8a8a8a; }
   html,body { margin:0; height:100%; background:#fff; font-family:-apple-system, "SF Pro Text", system-ui, sans-serif; color:var(--ink); user-select:none; -webkit-user-select:none; overflow:hidden; }
   .marker { font-family:"Marker Felt","Comic Sans MS","Chalkboard SE",sans-serif; }
-  #stage { position:relative; width:100%; height:280px; overflow:hidden; background:var(--paper); }
+  #stage { position:relative; width:100%; height:268px; overflow:hidden; background:var(--paper); }
   #title { position:absolute; left:0; right:0; top:8px; text-align:center; font-size:26px; letter-spacing:1px; font-weight:700; }
   #leanBtn { position:absolute; right:16px; top:112px; font-size:15px; letter-spacing:.4px; padding:7px 16px; border:2px solid #333; border-radius:999px; background:#fff; color:#222; cursor:pointer; box-shadow:2px 2px 0 #333; }
   #leanBtn:focus { outline:none; }
@@ -16,13 +16,23 @@
   .picks label.off { opacity:.4; cursor:default; }
   .picks input { display:none; }
   .leanCount { font-size:11px; color:var(--muted); margin-left:auto; }
+  .screen .top button.small { font:inherit; font-size:11px; padding:4px 10px; border:1px solid #e6e2da; border-radius:999px; background:#fff; color:#444; cursor:pointer; margin-left:8px; }
+  .screen .top button.small:hover { color:#222; border-color:#ccc; }
   .card h2.row { display:flex; align-items:baseline; }
   #label { position:absolute; left:0; right:0; top:40px; text-align:center; font-size:12px; letter-spacing:.4px; color:var(--muted); }
   #leg { position:absolute; left:50%; top:62px; font-size:190px; line-height:1; transform-origin:50% 12%; transform:translateX(-50%) rotate(0deg); cursor:grab; touch-action:none; filter:drop-shadow(4px 4px 0 rgba(0,0,0,.22)); }
   #leg.dragging { cursor:grabbing; }
+  /* the leg strains as it is wound back: a tremble near kick, a proper shake near boot */
+  @keyframes tremble { 0%, 100% { margin-top:0; margin-left:0; } 25% { margin-top:-1px; margin-left:1px; } 75% { margin-top:1px; margin-left:-1px; } }
+  @keyframes strain { 0%, 100% { margin-top:0; margin-left:0; } 20% { margin-top:-2.5px; margin-left:2px; } 50% { margin-top:2px; margin-left:-2.5px; } 80% { margin-top:-1.5px; margin-left:-1.5px; } }
+  #leg.tense { animation: tremble .14s infinite; }
+  #leg.straining { animation: strain .09s infinite; }
   #meter { position:absolute; left:50%; top:85px; width:270px; height:270px; transform:translate(-50%,-50%); border-radius:50%;
            background:conic-gradient(from 180deg, var(--tap) 0 36deg, var(--kick) 36deg 73deg, var(--boot) 73deg 110deg, transparent 110deg 360deg);
            -webkit-mask:radial-gradient(circle, transparent 116px, #000 117px, #000 134px, transparent 135px); opacity:.35; pointer-events:none; }
+  /* the wind-up readout: a bubble that follows the foot around the ring, upright and kept inside the stage */
+  #pointerText { position:absolute; left:0; top:0; z-index:3; display:none; pointer-events:none; font-size:14px; letter-spacing:.4px; padding:4px 11px; border:2px solid #333; border-radius:999px; background:#fff; color:#222; white-space:nowrap; box-shadow:2px 2px 0 #333; }
+  #pointerText.on { display:block; }
   #burst { position:absolute; left:50%; top:190px; transform:translate(-50%,-50%) rotate(-8deg) scale(0); font-size:44px; font-weight:900; color:#fff; -webkit-text-stroke:3px #111; text-shadow:4px 4px 0 #111; pointer-events:none; transition:transform .12s cubic-bezier(.2,1.6,.4,1); }
   #burst.show { transform:translate(-50%,-50%) rotate(-8deg) scale(1); }
   #whoosh { position:absolute; left:55%; top:230px; font-size:48px; opacity:0; transform:scaleX(2.5); pointer-events:none; }
@@ -34,8 +44,13 @@
   .np .art { width:44px; height:44px; border-radius:8px; background:#e4e0d8; flex:none; object-fit:cover; display:none; }
   .np .art.on { display:block; }
   .np .meta { flex:1; min-width:0; }
-  .np .title { font-size:14px; font-weight:600; color:#111; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .np .artist { font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* marquee, like every music player: text that overflows glides to its end, rests, and glides back */
+  .marq { overflow:hidden; white-space:nowrap; text-overflow:clip; }
+  .marq > span { display:inline-block; will-change:transform; }
+  .marq.scroll > span { animation: marq var(--marq-dur, 8s) ease-in-out infinite alternate; }
+  @keyframes marq { 0%, 18% { transform:translateX(0); } 82%, 100% { transform:translateX(var(--marq-shift, 0px)); } }
+  .np .title { font-size:14px; font-weight:600; color:#111; white-space:nowrap; overflow:hidden; }
+  .np .artist { font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; }
   .np .bar { height:3px; background:#e4e0d8; border-radius:2px; margin-top:6px; overflow:hidden; } .np .bar i { display:block; height:100%; background:#1db954; width:0; }
   .tp { display:flex; gap:6px; }
   .tp button { width:30px; height:30px; border:0; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.12); cursor:pointer; padding:0; color:#222; display:flex; align-items:center; justify-content:center; }
@@ -43,22 +58,50 @@
   .tp button.loved { color:#e5513f; }
   #content { flex:1; min-height:0; overflow:hidden; }
   .head { font-family:"Marker Felt","Comic Sans MS","Chalkboard SE",sans-serif; font-size:26px; line-height:1.15; margin:2px 0 4px; letter-spacing:.4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #content { display:flex; flex-direction:column; justify-content:center; }
+  #content { display:flex; flex-direction:column; justify-content:flex-start; }   /* top-anchored: the headline never crops */
   .head.returned { color:#2a7a3b; } .head.bent { color:#b8730f; } .head.followed { color:#c0392b; } .head.wait { color:#333; } .head.wide { color:#c0392b; }
   .sub { font-size:13px; color:#666; } .sub + .sub { margin-top:8px; }
+  .traj { display:flex; flex-direction:column; gap:5px; margin:6px 0 4px; font-size:12.5px; line-height:1.4; color:#b0b0b0; }
+  .step { display:flex; align-items:center; gap:9px; white-space:nowrap; min-width:0; }
+  .step .bullet { flex:none; width:7px; display:flex; justify-content:center; align-items:center; }
+  .step .dot { display:block; width:7px; height:7px; border-radius:50%; background:#ddd; }
+  .step .whistle { font-size:13px; line-height:1; }
+  .step .lbl { flex:none; }
+  .step .what { flex:1; min-width:0; overflow:hidden; }
+  .step b { font-weight:600; color:inherit; }
+  .step.done { color:#9a9a9a; } .step.done .dot { background:#9fd7ac; }          /* played: mildly grey */
+  .step.done .marq.scroll > span { animation:none; }   /* a played row rests; only the row playing now glides */
+  .step.done .what { text-overflow:ellipsis; }
+  .step.now { color:#222; } .step.now .dot { background:#f3b13f; }               /* playing now: full contrast */
+  .step.now b { color:#111; }
+  .step .along { flex:none; font-size:11px; color:#888; font-variant-numeric:tabular-nums; }
   .sub b { color:#222; font-weight:600; }
   .chips { display:flex; gap:6px; margin:8px 0 0; flex-wrap:wrap; }
   .chip { font-size:11px; padding:2px 8px; border-radius:999px; background:var(--card); color:#444; vertical-align:middle; white-space:nowrap; display:inline-block; }
   .sub .chip { margin-left:4px; }
   .chip.tap { background:#dff1e0; } .chip.kick { background:#fbe9c4; } .chip.boot { background:#f8d3cd; }
   .row { display:flex; align-items:center; justify-content:space-between; }
-  .hint { font-size:11px; color:var(--muted); }
+  .hint { font-size:11px; color:var(--muted); display:inline-flex; align-items:center; gap:7px; cursor:pointer; transition:color .15s; }
+  .hint:hover { color:#222; }
+  .hint .more { opacity:0; transform:translateX(-4px); transition:opacity .15s, transform .15s; }
+  .hint:hover .more { opacity:1; transform:none; }
+  /* the equalizer: three bars, bouncing while subs warm up, resting at three heights when the bench is settled */
+  .eq { display:inline-flex; align-items:flex-end; gap:2px; height:11px; }
+  .eq i { display:block; width:2.5px; border-radius:1px; background:currentColor; opacity:.8; }
+  .eq i:nth-child(1) { height:5px; } .eq i:nth-child(2) { height:9px; } .eq i:nth-child(3) { height:7px; }
+  /* music playing: a slow, easy bounce; subs warming up: fast; paused: still */
+  .hint.playing .eq i { animation: eqbar 1.6s ease-in-out infinite; }
+  .hint.live .eq i { animation-duration: .7s; }
+  .hint.playing .eq i:nth-child(2), .hint.live .eq i:nth-child(2) { animation-delay:.25s; }
+  .hint.playing .eq i:nth-child(3), .hint.live .eq i:nth-child(3) { animation-delay:.5s; }
+  .hint.live .eq i { animation-name: eqbar; }
+  @keyframes eqbar { 0%, 100% { height:4px; } 50% { height:11px; } }
   .icons { display:flex; gap:14px; }
   .gear { cursor:pointer; color:#b0b0b0; display:inline-flex; } .gear svg { width:16px; height:16px; } .gear:hover { color:#222; }
   .confirm { font-size:12px; color:#444; display:flex; gap:10px; align-items:center; }
   .confirm b { cursor:pointer; color:#c0392b; } .confirm span { cursor:pointer; color:#888; }
   .screen { display:none; position:fixed; inset:0; background:var(--paper); z-index:10; flex-direction:column; font-size:13px; color:#222; }
-  body.settings #settings, body.stats #stats, body.lean #lean { display:flex; }
+  body.settings #settings, body.stats #stats, body.lean #lean, body.pool #pool { display:flex; }
   .screen .top { display:flex; align-items:center; gap:10px; padding:16px 16px 8px; }
   .screen .back { width:30px; height:30px; border:0; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.12); cursor:pointer; display:flex; align-items:center; justify-content:center; color:#222; padding:0; }
   .screen .back svg { width:16px; height:16px; } .screen .back:active { background:#eee; }
@@ -69,6 +112,22 @@
   .tile b { display:block; font-size:22px; font-weight:700; line-height:1.1; color:#111; }
   .tile span { font-size:11px; color:var(--muted); }
   .tile.returned b { color:#2a7a3b; } .tile.bent b { color:#b8730f; } .tile.followed b { color:#c0392b; }
+  .bench { display:flex; flex-direction:column; gap:5px; margin-top:8px; cursor:pointer; }
+  .benchRow { display:flex; align-items:center; gap:8px; font-size:12px; min-width:0; }
+  .benchRow .chip { width:38px; text-align:center; flex:none; }
+  .benchRow .who { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#222; }
+  .benchRow .who.quiet { color:#999; }
+  .benchRow .n { flex:none; font-size:11px; color:#999; }
+  .pick { cursor:pointer; border-radius:8px; margin:0 -6px; padding:2px 6px; transition:background .12s; }
+  .pick:hover { background:#f3efe6; } .pick:active { background:#e9e3d6; }
+  .pulse { display:inline-block; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity:.35; } 50% { opacity:1; } }
+  .poolRow { display:flex; align-items:center; gap:8px; }
+  .poolRow .who { flex:1; min-width:0; }
+  .poolRow .who .t { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .poolRow .who .d { font-size:11px; color:#888; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .poolRow .rel { flex:none; font-size:11px; color:#666; font-variant-numeric:tabular-nums; }
+  .card h2 .state { float:right; font-weight:500; text-transform:none; letter-spacing:0; }
   .kicks { display:flex; flex-direction:column; gap:8px; }
   .kickRow { display:flex; align-items:center; gap:8px; }
   .kickRow .who { flex:1; min-width:0; }
@@ -79,12 +138,13 @@
   .empty { color:#888; font-size:12px; }
   /* markers are positioned on [0,100%] of the ruler and are up to 18px wide, so the ruler is inset by that much */
   .ruler { position:relative; height:26px; margin:2px 9px 2px; }
+  .traj + .ruler { margin-top:16px; }   /* breathing room under the timeline, which has no notes row above the ruler */
   .ruler .track { position:absolute; left:0; right:0; top:11px; height:6px; border-radius:3px;
-    background:linear-gradient(90deg, #dff1e0 0%, #dff1e0 50%, #fbe9c4 50%, #fbe9c4 75%, #f8d3cd 75%, #f8d3cd 100%); }
+    background:linear-gradient(90deg, #dff1e0 0%, #dff1e0 42.5%, #fbe9c4 42.5%, #fbe9c4 82.5%, #f8d3cd 82.5%, #f8d3cd 100%); }
   .ruler .tick { position:absolute; top:4px; width:2px; height:20px; background:#bbb; transform:translateX(-1px); }
   .ruler .aim { position:absolute; top:2px; font-size:20px; line-height:22px; transform:translateX(-50%); }
   .ruler .ball { position:absolute; top:4px; font-size:17px; line-height:18px; transform:translateX(-50%); filter:drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
-  .ruler .spot { position:absolute; top:7px; width:14px; height:14px; transform:translateX(-7px); }
+  .ruler .pickDot { position:absolute; top:8px; width:11px; height:11px; border-radius:50%; background:#1db954; border:2px solid #fff; box-shadow:0 1px 2px rgba(0,0,0,.25); transform:translateX(-5.5px); }
   .rulerNotes { position:relative; height:15px; margin:6px 9px 0; font-size:12px; color:#333; }
   .rulerNotes span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
   .rulerNotes span.first { transform:none; } .rulerNotes span.last { transform:translateX(-100%); }
@@ -119,6 +179,7 @@
   <div id="label">wind the leg back</div>
   <div id="meter"></div>
   <div id="leg">🦵</div>
+  <div class="marker" id="pointerText"></div>
   <div id="ball"><span>⚽</span><img src="ball.png" alt=""></div>
   <button id="leanBtn" class="marker" onclick="toggleLean()" title="Narrow the search: genres, moods, your own words. The kick strength still varies inside it.">lean</button>
   <div id="whoosh">≋</div>
@@ -143,14 +204,9 @@
       <p>Your own app from developer.spotify.com/dashboard, used to turn names into track ids. The id is kept in config.toml; the secret goes to your Keychain and is never written to a file.</p>
     </div>
     <div class="card">
-      <h2>Digging</h2>
-      <label><input type="range" id="dig" min="0" max="2" step="1" value="1" oninput="knobs()"><span class="value" id="digV">hits off</span></label>
-      <p>How far off the beaten path the brain should look. Changing it drops the current picks.</p>
-    </div>
-    <div class="card">
       <h2>Ball</h2>
       <label><input type="checkbox" id="pirate" onchange="pirate(this.checked)"> 🏴‍☠️ pirate ball</label>
-      <p>The ball becomes something greener. Your call, not ours.</p>
+      <p>The ball becomes something greener. Your call, not mine.</p>
     </div>
     <div class="card">
       <h2>Spot Kick</h2>
@@ -159,7 +215,7 @@
   </div>
 </div>
 <div id="lean" class="screen">
-  <div class="top"><button class="back" onclick="toggleLean()" title="back" id="btnBackLean"></button><h1>Lean</h1><span class="leanCount" id="leanCount"></span></div>
+  <div class="top"><button class="back" onclick="toggleLean()" title="back" id="btnBackLean"></button><h1>Lean</h1><span class="leanCount" id="leanCount"></span><button class="quiet small" id="leanClear" onclick="clearLean()" title="untick everything">clear all</button></div>
   <div class="body">
     <div class="card"><h2>Genres</h2><div class="picks" id="leanGenres"></div></div>
     <div class="card"><h2>Moods</h2><div class="picks" id="leanMoods"></div></div>
@@ -169,6 +225,10 @@
     </div>
   </div>
 </div>
+<div id="pool" class="screen">
+  <div class="top"><button class="back" onclick="togglePool()" title="back" id="btnBackPool"></button><h1>Bench</h1><span class="leanCount" id="poolCount"></span></div>
+  <div class="body" id="poolBody"><div class="empty">loading…</div></div>
+</div>
 <div id="stats" class="screen">
   <div class="top"><button class="back" onclick="toggleStats()" title="back" id="btnBackStats"></button><h1>Stats</h1></div>
   <div class="body" id="statsBody"><div class="empty">loading…</div></div>
@@ -177,11 +237,11 @@
   <div id="content"><div class="head wait">Wind it up</div><div class="sub">A little for a tap, more for a kick, all the way for a boot.</div></div>
   <div class="np">
     <img class="art" id="npArt" alt="">
-    <div class="meta"><div class="title" id="npTitle">loading…</div><div class="artist" id="npArtist"></div><div class="bar"><i id="npBar"></i></div></div>
+    <div class="meta"><div class="title marq" id="npTitle"><span>loading…</span></div><div class="artist marq" id="npArtist"><span></span></div><div class="bar"><i id="npBar"></i></div></div>
     <div class="tp"><button id="btnPlay" onclick="transport('playpause')" title="play / pause"></button><button id="btnNext" onclick="transport('next')" title="next"></button><button id="btnMute" onclick="transport('mute')" title="mute"></button><button id="btnLove" onclick="love()" title="favourite"></button></div>
   </div>
   <div class="row">
-    <span class="hint" id="hint"></span>
+    <span class="hint" id="hint" onclick="togglePool()"><span class="eq"><i></i><i></i><i></i></span><span id="hintText"></span><span class="more">›</span></span>
     <span class="icons" id="icons"><span class="gear" id="icoStats" onclick="toggleStats()" title="stats"></span><span class="gear" id="icoGear" onclick="toggleSettings()" title="settings"></span><span class="gear" id="icoPower" onclick="askQuit()" title="quit Spot Kick"></span></span>
   </div>
 </div>
@@ -200,17 +260,17 @@ const I = {
   mute: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z" fill="currentColor"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
   power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
-  stats: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="3" y="13" width="4" height="8" rx="1"/><rect x="10" y="8" width="4" height="13" rx="1"/><rect x="17" y="3" width="4" height="18" rx="1"/></svg>',
+  stats: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg>',
   heart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 21s-7-4.6-9.3-9A5.2 5.2 0 0 1 12 6.4 5.2 5.2 0 0 1 21.3 12C19 16.4 12 21 12 21z"/></svg>',
   heartFull: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 21s-7-4.6-9.3-9A5.2 5.2 0 0 1 12 6.4 5.2 5.2 0 0 1 21.3 12C19 16.4 12 21 12 21z"/></svg>',
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
 };
 document.getElementById('btnPlay').innerHTML = I.play; document.getElementById('btnNext').innerHTML = I.next; document.getElementById('btnMute').innerHTML = I.vol; document.getElementById('btnLove').innerHTML = I.heart;
 document.getElementById('icoGear').innerHTML = I.gear; document.getElementById('icoPower').innerHTML = I.power; document.getElementById('icoStats').innerHTML = I.stats;
-document.getElementById('btnBack').innerHTML = I.back; document.getElementById('btnBackStats').innerHTML = I.back; document.getElementById('btnBackLean').innerHTML = I.back;
-function toggleSettings() { document.body.classList.remove('stats', 'lean'); document.body.classList.toggle('settings'); }
+document.getElementById('btnBack').innerHTML = I.back; document.getElementById('btnBackStats').innerHTML = I.back; document.getElementById('btnBackLean').innerHTML = I.back; document.getElementById('btnBackPool').innerHTML = I.back;
+function toggleSettings() { document.body.classList.remove('stats', 'lean', 'pool'); document.body.classList.toggle('settings'); }
 async function toggleStats() {
-  document.body.classList.remove('settings', 'lean');
+  document.body.classList.remove('settings', 'lean', 'pool');
   const open = document.body.classList.toggle('stats');
   if (open) renderStats();
 }
@@ -254,6 +314,7 @@ function unaskQuit() {
 }
 const MAX = 110;
 const leg = document.getElementById('leg'), label = document.getElementById('label'), burst = document.getElementById('burst');
+const pointerText = document.getElementById('pointerText');
 const whoosh = document.getElementById('whoosh'), meter = document.getElementById('meter');
 
 // ---- the ball: rests at the toe; the swing launches it; it ricochets while the brain thinks; then rolls home
@@ -292,20 +353,61 @@ window.addEventListener('resize', () => { if (B.mode === 'rest') ballRest(); });
 setTimeout(ballRest, 50);
 
 // ---- the leg
-let angle = 0, dragging = false, startPointer = 0, startAngle = 0, busy = false, showing = null;
+let angle = 0, dragging = false, startPointer = 0, busy = false, showing = null;
+const TENSE_FROM = 0.33, STRAIN_FROM = 0.72;   // wind-up fractions where the tremble and the shake begin
 function rotateLeg(deg) { leg.style.transform = `translateX(-50%) rotate(${deg}deg)`; }
+// When the lean has been measured to cap the reach, the wind-up says so where you are looking.
+function cappedNote(strength) {
+  const pool = (window.lastStatus || {}).pool || {};
+  const entry = (pool.bench || {})[strength];
+  if (!entry || entry.state !== 'capped') return '';
+  return ` · capped by “${pool.lean}”`;
+}
+function strainLeg(m) {
+  leg.classList.toggle('tense', dragging && m >= TENSE_FROM && m < STRAIN_FROM);
+  leg.classList.toggle('straining', dragging && m >= STRAIN_FROM);
+}
 function strengthOf(m) { return m < 0.33 ? 'tap' : m < 0.66 ? 'kick' : 'boot'; }
+const POINTER_MIN_ANGLE = 6;   // below this the leg is at rest: hint text, no pointer
+const BUBBLE_COLOR = { tap: '#dff1e0', kick: '#fbe9c4', boot: '#f8d3cd' };
+const RING_CENTER_Y = 85, FOOT_RADIUS = 157, BUBBLE_GAP = 20, BUBBLE_TOP_MIN = 46, BUBBLE_TOP_MAX = 244;
+// The bubble sits just beyond the foot, on the side with room (the ring is on the left, so usually to its right),
+// upright and clamped to the stage.
+function placeBubble() {
+  const radians = angle * Math.PI / 180;
+  const footX = stage.clientWidth / 2 - FOOT_RADIUS * Math.sin(radians);
+  const footY = RING_CENTER_Y + FOOT_RADIUS * Math.cos(radians);
+  const width = pointerText.offsetWidth, height = pointerText.offsetHeight;
+  const toTheRight = footX < stage.clientWidth / 2;
+  const left = toTheRight ? footX + BUBBLE_GAP : footX - BUBBLE_GAP - width;
+  const top = Math.max(BUBBLE_TOP_MIN, Math.min(BUBBLE_TOP_MAX - height, footY - height / 2));
+  pointerText.style.left = `${Math.max(6, Math.min(stage.clientWidth - width - 6, left))}px`;
+  pointerText.style.top = `${top}px`;
+}
 function setAngle(a) {
   angle = Math.max(0, Math.min(MAX, a)); rotateLeg(angle); meter.style.opacity = 0.35 + 0.55 * (angle / MAX);
-  const m = angle / MAX;
-  label.textContent = angle < 6 ? 'wind the leg back' : `${strengthOf(m).toUpperCase()} · ${Math.round(m*100)}%`;
+  const m = angle / MAX, wound = angle >= POINTER_MIN_ANGLE, strength = strengthOf(m);
+  strainLeg(m);
+  label.style.opacity = wound ? 0 : 1;
+  pointerText.classList.toggle('on', wound);
+  pointerText.textContent = `${strength.toUpperCase()} · ${Math.round(m * 100)}%${cappedNote(strength)}`;
+  pointerText.style.background = BUBBLE_COLOR[strength];
+  if (wound) placeBubble();
 }
 function pivot() { const r = meter.getBoundingClientRect(); return {x: r.left + r.width/2, y: r.top + r.height/2}; }
 function pointerAngle(ev) { const c = pivot(); return Math.atan2(ev.clientY - c.y, ev.clientX - c.x) * 180 / Math.PI; }
-leg.addEventListener('pointerdown', ev => { if (busy) return; dragging = true; leg.classList.add('dragging'); startPointer = pointerAngle(ev); startAngle = angle; leg.setPointerCapture(ev.pointerId); });
+leg.addEventListener('pointerdown', ev => { if (busy) return; dragging = true; leg.classList.add('dragging'); startPointer = pointerAngle(ev); leg.setPointerCapture(ev.pointerId); });
 function unwrap(d) { return ((d + 540) % 360) - 180; }   // shortest signed delta: no 360° jump when the cursor crosses the seam
-leg.addEventListener('pointermove', ev => { if (!dragging) return; const d = unwrap(pointerAngle(ev) - startPointer); startPointer += d; startAngle += d; setAngle(startAngle); });
-function endDrag() { if (!dragging) return; dragging = false; leg.classList.remove('dragging'); release(); }
+// Resistance: the further back the leg is, the less of each cursor movement it gives — a spring, not a dial.
+const RESISTANCE_AT_MAX = 0.6;   // at full wind-up the leg follows only 40% of the cursor
+leg.addEventListener('pointermove', ev => {
+  if (!dragging) return;
+  const d = unwrap(pointerAngle(ev) - startPointer); startPointer += d;
+  const pullingBack = d > 0;
+  const give = pullingBack ? 1 - RESISTANCE_AT_MAX * (angle / MAX) : 1;   // letting go is never resisted
+  setAngle(angle + d * give);
+});
+function endDrag() { if (!dragging) return; dragging = false; leg.classList.remove('dragging', 'tense', 'straining'); release(); }
 leg.addEventListener('pointerup', endDrag);
 leg.addEventListener('pointercancel', endDrag);
 
@@ -325,7 +427,7 @@ let quipTimer = null;
 function startShow(strength) {
   const t0 = performance.now();
   const article = strength === 'kick' ? 'a kick' : strength === 'boot' ? 'a boot' : 'a tap';
-  const draw = () => setContent(`<div class="head wait">Kicking…</div><div class="sub">choosing the measured song nearest ${article} · ${((performance.now()-t0)/1000).toFixed(0)} s</div>`);
+  const draw = () => setContent(`<div class="head wait">Kicking…</div><div class="sub">sending on the sub best placed for ${article} · ${((performance.now()-t0)/1000).toFixed(0)} s</div>`);
   draw(); quipTimer = setInterval(draw, 1000);
 }
 function stopShow() { clearInterval(quipTimer); quipTimer = null; }
@@ -343,7 +445,7 @@ async function kick(magnitude, strength) {
     whenBallRests = () => {
       burst.textContent = (shotWord(landed) || 'KICKED').toUpperCase(); burst.classList.add('show');
       setTimeout(() => burst.classList.remove('show'), 900);
-      setContent(kickCard(landed, k.candidates.length));
+      setContent(kickCard(landed));
       busy = false; setTimeout(tick, 1000);
     };
     if (B.mode === 'rest') ballRest(); else ballReturn();   // a ball already at rest settles now, or busy would stick
@@ -351,6 +453,22 @@ async function kick(magnitude, strength) {
   } catch (e) { stopShow(); burst.textContent = 'WIDE'; burst.classList.add('show'); setTimeout(() => burst.classList.remove('show'), 900);
     showing = `<div class="head wide">Didn't land</div><div class="sub">${esc(String(e).slice(0, 160))}</div>`; setContent(showing); setTimeout(() => { showing = null; }, 10000); }
   ballReturn(); busy = false; setTimeout(tick, 1000);
+}
+// Pointing at a sub sends it on: same card, same judging, no wind-up — the strength is what the pick measures as.
+async function sendOn(candId) {
+  if (busy) return;
+  busy = true; showing = null;
+  document.body.classList.remove('pool');
+  setContent(`<div class="head wait">Sending on…</div><div class="sub">the sub you pointed at</div>`);
+  try {
+    const k = await api.kick_pick(candId);
+    burst.textContent = 'SUB ON'; burst.classList.add('show'); setTimeout(() => burst.classList.remove('show'), 900);
+    setContent(kickCard({...k, n_since: 0, chosen: [], verdict: 'listening'}));
+  } catch (e) {
+    burst.textContent = 'WIDE'; burst.classList.add('show'); setTimeout(() => burst.classList.remove('show'), 900);
+    showing = `<div class="head wide">Didn't land</div><div class="sub">${esc(String(e).slice(0, 160))}</div>`; setContent(showing); setTimeout(() => { showing = null; }, 10000);
+  }
+  busy = false; setTimeout(tick, 1000);
 }
 async function love() { try { const r = await api.love(); paintLove(r.loved); } catch (e) { document.getElementById('log').textContent = String(e); } }
 function paintArt(url) { const img = document.getElementById('npArt'); if (!url) { img.classList.remove('on'); img.removeAttribute('src'); return; } if (img.getAttribute('src') !== url) img.src = url; img.classList.add('on'); }
@@ -381,9 +499,15 @@ let leanOnOpen = '';
 function leanPicks() { return [...document.querySelectorAll('#lean .picks input:checked')].map(box => box.value); }
 function leanWords() { return document.getElementById('leanText').value.split(',').map(word => word.trim()).filter(Boolean); }
 function leanValue() { return [...leanPicks(), ...leanWords()].join(', '); }
+function clearLean() {
+  document.querySelectorAll('#lean .picks input').forEach(box => { box.checked = false; });
+  document.getElementById('leanText').value = '';
+  paintLeanCount();
+}
 function paintLeanCount() {
   const used = leanPicks().length + leanWords().length;
   document.getElementById('leanCount').textContent = used ? `${used} of ${LEAN_MAX}` : '';
+  document.getElementById('leanClear').hidden = used === 0;
   const full = used >= LEAN_MAX;
   document.querySelectorAll('#lean .picks label').forEach(label => label.classList.toggle('off', full && !label.querySelector('input').checked));
 }
@@ -412,30 +536,86 @@ function paintLeanButton(lean) {
   button.classList.toggle('set', count > 0);
 }
 async function toggleLean() {
-  document.body.classList.remove('settings', 'stats');
+  document.body.classList.remove('settings', 'stats', 'pool');
   const open = document.body.classList.toggle('lean');
   if (open) { leanOnOpen = window.currentLean || ''; fillLean(leanOnOpen); return; }
   const lean = leanValue();
   if (lean === leanOnOpen) return;
-  try { window.currentLean = await api.set_lean(lean); paintLeanButton(window.currentLean); }
+  try {
+    window.currentLean = await api.set_lean(lean); paintLeanButton(window.currentLean);
+    showLeanTransition(window.currentLean);
+  }
   catch (e) { document.getElementById('log').textContent = String(e); }
+}
+// A changed lean empties the bench: say so at once, and hold the card until the first new subs arrive.
+let leanTransition = false;
+function showLeanTransition(lean) {
+  leanTransition = true;
+  const where = lean ? `inside “${esc(lean)}”` : 'with no lean';
+  showing = `<div class="head wait">Bench cleared</div><div class="sub"><span class="pulse">Scouting new subs ${where}…</span> the kick will wait for them.</div>`;
+  setContent(showing);
+  document.getElementById('hintText').textContent = 'scouting…';
+  document.getElementById('hint').classList.add('live');
 }
 buildLeanPicks();
 async function setBrain(name) { try { await api.set_brain(name); } catch (e) { document.getElementById('log').textContent = String(e); } }
-async function knobs() { const d = document.getElementById('dig').value; document.getElementById('digV').textContent = ['any', 'hits off', 'deep'][Number(d)]; await api.set_dig(Number(d)); }
 const VERDICT_WORDS = { returned: 'Returned', bent: 'Bent', followed: 'Followed' };
 const SONGS_TO_JUDGE = 2;
 
+// The bench: picks the brain named and we measured before you kicked, so the kick itself is instant. Per band,
+// the one that would play right now at that strength, and what the band is doing.
+const BAND_STATE_TEXT = { building: 'warming up…', resting: 'nobody on the bench kicks this far yet — scouting again soon', empty: 'nobody on the bench kicks this far yet' };
+function bandStateText(entry, lean) {
+  if (entry.state === 'capped') return `nobody in “${esc(lean)}” kicks this far — widen the lean`;
+  return BAND_STATE_TEXT[entry.state] || '—';
+}
+const BENCH_SHOWN_PER_BAND = 10;
+function benchRow(band, entry, showCount, lean) {
+  const first = entry.would_play || entry.picks[0];
+  if (!first) {
+    const text = bandStateText(entry, lean);
+    const cls = entry.state === 'building' ? 'pulse' : '';
+    const onclick = entry.state === 'capped' ? ' onclick="event.stopPropagation(); toggleLean()"' : '';
+    return `<div class="benchRow"${onclick}><span class="chip ${band}">${band}</span><span class="who quiet"><span class="${cls}">${text}</span></span></div>`;
+  }
+  const more = showCount && entry.picks.length > 1 ? `<span class="n">+${entry.picks.length - 1}</span>` : '';
+  const finding = entry.state === 'building' ? '<span class="n pulse">more warming up…</span>' : '';
+  return `<div class="benchRow pick" onclick="event.stopPropagation(); sendOn(${Number(first.cand_id)})" title="send this one on now"><span class="chip ${band}">${band}</span><span class="who">${esc(first.artist)} — ${esc(first.title)}</span>${more}${finding}</div>`;
+}
+function benchBlock(pool) {
+  const bench = pool.bench || {};
+  const rows = ['tap', 'kick', 'boot'].map(band => benchRow(band, bench[band] || { picks: [], state: 'empty' }, true, pool.lean || '')).join('');
+  return `<div class="bench" onclick="togglePool()" title="the bench: every pick measured and waiting">${rows}</div>`;
+}
 function poolHint(pool) {
   if (!pool) return '';
-  if (pool.ready) {
-    const bands = pool.bands || {};
-    const missing = ['tap', 'kick', 'boot'].filter(b => !bands[b]);
-    const note = missing.length === 0 ? '' : missing.length === 3 ? '' : ` · no ${missing.join('/')} yet${pool.building ? '…' : ''}`;
-    return `${pool.ready} pick${pool.ready === 1 ? '' : 's'} ready${note}`;
-  }
-  if (pool.building) return 'finding picks…';
+  if (pool.ready) return `${pool.ready} waiting on the bench${pool.building ? ' · more warming up…' : ''}`;
+  if (pool.building) return 'scouting the first subs…';
   return '';
+}
+function poolBand(band, entry, lean) {
+  const state = entry.state === 'ready' ? `${entry.picks.length}` : (entry.state === 'capped' ? 'capped by the lean' : (BAND_STATE_TEXT[entry.state] || ''));
+  const shown = entry.picks.slice(0, BENCH_SHOWN_PER_BAND);
+  const more = entry.picks.length > shown.length ? `<div class="empty">+${entry.picks.length - shown.length} more, farther out</div>` : '';
+  const rows = shown.map(pick => `<div class="poolRow pick" onclick="sendOn(${Number(pick.cand_id)})" title="send this one on now">
+      <div class="who"><div class="t">${esc(pick.artist)} — ${esc(pick.title)}</div><div class="d">${esc(pick.direction || '')}</div></div>
+      <span class="rel" title="cosine distance from your listening now · ${pick.rel.toFixed(2)} on your ruler">${pick.distance.toFixed(2)}</span></div>`).join('');
+  const emptyText = entry.state === 'building' ? '<span class="pulse">scouting — asking the brain…</span>'
+    : entry.state === 'capped' ? `Inside “${esc(lean)}” nothing measures this far for you. The brain was told twice where its picks landed; everything in the lean measures closer than this. Widen the lean to reach it.`
+    : 'none of the picks lands at this distance from you yet — the brain is told where its picks landed and asked again';
+  const empty = rows ? '' : `<div class="empty">${emptyText}</div>`;
+  return `<div class="card"><h2>${band} <span class="state">${state}</span></h2><div class="kicks">${rows}${more}${empty}</div></div>`;
+}
+function renderPool(pool) {
+  const bench = pool.bench || {};
+  document.getElementById('poolCount').textContent = pool.ready ? `${pool.ready} waiting` : '';
+  const intro = `<div class="card"><p style="margin:0">The subs: songs the brain scouted and the ruler measured while you listened, warmed up so a kick never waits. Each sits on the tap, kick or boot bench by where it actually lands on your ruler, whatever the brain intended. A kick sends on the one nearest your wind-up; the rest keep waiting. Numbers are cosine distance from what you are listening to now (0 identical, 1 unrelated); your typical step is ${scaleNow.typical_step.toFixed(2)}, far for you ${scaleNow.far.toFixed(2)}.</p></div>`;
+  document.getElementById('poolBody').innerHTML = intro + ['tap', 'kick', 'boot'].map(band => poolBand(band, bench[band] || { picks: [], state: 'empty' }, pool.lean || '')).join('');
+}
+function togglePool() {
+  document.body.classList.remove('settings', 'stats', 'lean');
+  const open = document.body.classList.toggle('pool');
+  if (open && window.lastStatus) renderPool(window.lastStatus.pool || {});
 }
 
 function kickLine(kick) {
@@ -444,11 +624,7 @@ function kickLine(kick) {
 }
 
 const RULER_MIN = -0.5, RULER_MAX = 1.5;
-const NOTE_MERGE_REL = 0.28;   // aimed and fell closer than this share one note, or the two would overprint
-// Spotify's mark: the green disc with three arcs.
-const SPOTIFY_MARK = `<svg viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="12" fill="#1db954"/>
-  <path d="M6 9.2c3.8-1.1 8.4-.7 11.7 1.1M6.6 12.4c3.2-.9 7-.6 9.8.9M7.2 15.4c2.6-.7 5.6-.4 7.9.8"
-  fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/></svg>`;
+const NOTE_MERGE_REL = 0.5;    // aimed and fell closer than this share one note, or the two would overprint
 function rulerX(rel) { return `${100 * (Math.min(RULER_MAX, Math.max(RULER_MIN, rel)) - RULER_MIN) / (RULER_MAX - RULER_MIN)}%`; }
 function clampRel(rel) { return Math.min(RULER_MAX, Math.max(RULER_MIN, rel)); }
 function edgeClass(rel) {
@@ -468,15 +644,15 @@ function rulerNotes(kick) {
 }
 
 // Where the kick was aimed (the goal marker), where the ball fell, and how far Spotify's picks have carried the
-// listener since: the followed fraction walks the Spotify mark from "before" (0) toward the ball (1).
-function ruler(kick) {
+// listener since: each of Spotify's picks is a green dot at how far along the kick it sits (0 before, 1 on the ball).
+function ruler(kick, withNotes = true) {
   const aimed = kick.target_rel == null ? '' : `<div class="aim" style="left:${rulerX(kick.target_rel)}" title="aimed ${kick.target_rel.toFixed(2)}">🥅</div>`;
-  const chosen = (kick.chosen || []).length;
-  const walked = chosen ? `<div class="spot" style="left:${rulerX(Math.max(0, kick.followed || 0) * kick.rel)}" title="Spotify so far">${SPOTIFY_MARK}</div>` : '';
-  return `${rulerNotes(kick)}<div class="ruler"><div class="track"></div>
+  const pickDots = (kick.chosen || []).filter(pick => pick.along != null).map(pick =>
+    `<div class="pickDot" style="left:${rulerX(Math.max(0, pick.along) * kick.rel)}" title="${esc(pick.artist)} — ${esc(pick.title)}"></div>`).join('');
+  return `${withNotes ? rulerNotes(kick) : ''}<div class="ruler"><div class="track"></div>
       <div class="tick" style="left:${rulerX(0)}"></div><div class="tick" style="left:${rulerX(1)}"></div>
-      ${aimed}${walked}<div class="ball" style="left:${rulerX(kick.rel)}" title="fell ${kick.rel.toFixed(2)}">⚽</div></div>
-    <div class="rulerAxis"><span class="first" style="left:0">nearer</span><span style="left:${rulerX(0)}">typical step</span><span style="left:${rulerX(1)}">far for you</span><span class="last" style="left:100%">beyond</span></div>`;
+      ${aimed}${pickDots}<div class="ball" style="left:${rulerX(kick.rel)}" title="fell ${kick.rel.toFixed(2)}">⚽</div></div>
+    <div class="rulerAxis"><span class="first" style="left:0">nearer</span><span style="left:${rulerX(0)}">typical step ${scaleNow.typical_step.toFixed(2)}</span><span style="left:${rulerX(1)}">far ${scaleNow.far.toFixed(2)}</span><span class="last" style="left:100%">beyond</span></div>`;
 }
 
 // The shot, in football: how far the ball fell from where it was aimed, on the listener's own scale.
@@ -495,29 +671,57 @@ function followedLine(kick) {
   return `Spotify went <b>${Math.round(100 * Math.min(1.2, followed))}%</b> of the way with you`;
 }
 
-// Only worth a word when the nearest pick we had measured into a different band than the one wound up for.
-function landedElsewhere(kick) {
-  if (!kick.band || kick.band === kick.strength) return '';
-  return ` — nearest pick measured a <b>${esc(kick.band)}</b>`;
-}
-
 // One card that evolves: the kicked song playing → Spotify's own picks, counted → the verdict.
-function kickCard(kick, pickedFrom) {
+function alongWords(along) {
+  if (along == null) return '';
+  if (along < 0) return 'the other way';
+  if (along < 0.25) return 'back where you were';
+  if (along < 0.6) return 'partway toward your kick';
+  if (along < 1.1) return 'right by your kick';
+  return 'past your kick';
+}
+function alongNote(along) { return along == null ? '' : `<span class="along" title="${alongWords(along)}">${along.toFixed(1)} along</span>`; }
+const ORDINAL = ['1st', '2nd', '3rd'];
+// label stays put; only the song (the part that can be long) is the marquee
+function step(cls, label, song = '', tail = '') {
+  const named = song ? `<span class="what marq"><span>${song}</span></span>` : '';
+  const bullet = cls.includes('verdict') ? `<span class="whistle">${VERDICT_BULLET[cls.split(' ').pop()] || '🎉'}</span>` : '<span class="dot"></span>';
+  return `<div class="step ${cls}"><span class="bullet">${bullet}</span><span class="lbl">${label}</span>${named}${tail}</div>`;
+}
+// the last stop gets the final whistle: a party if Spotify followed, a shrug if it bent, a sigh if it came home
+const VERDICT_BULLET = { followed: '🎉', bent: '🤷', returned: '🏠' };
+// The trajectory as a timeline: your kick, then each of Spotify's picks with how far along the kick it sits (0 where
+// you were, 1 on the kick), then the verdict once the window is full. The same card fills in line by line.
+function trajectory(kick) {
   const chosen = kick.chosen || [];
-  const picked = pickedFrom ? `<span class="chip">picked from ${pickedFrom}</span>` : '';
+  const judged = kick.n_since >= SONGS_TO_JUDGE;
+  // The row of the song playing now carries the amber dot; the one after it just says it will play next.
+  const playingIndex = chosen.length;   // 0 = your kick is playing, 1 = Spotify's 1st pick is, ...
+  const lines = [step(playingIndex === 0 ? 'now' : 'done', 'Your kick:', `<b>${esc(kick.track.artist)} — ${esc(kick.track.title)}</b>`)];
+  for (let i = 0; i < SONGS_TO_JUDGE; i++) {
+    const pick = chosen[i];
+    if (pick) {
+      const cls = i + 1 === playingIndex && !judged ? 'now' : 'done';
+      lines.push(step(cls, `Spotify's ${ORDINAL[i]} pick:`, `<b>${esc(pick.artist)} — ${esc(pick.title)}</b>`, alongNote(pick.along)));
+    } else if (i === chosen.length) {
+      lines.push(step('', `Spotify's ${ORDINAL[i]} pick: will play next`));
+    } else {
+      lines.push(step('', `Spotify's ${ORDINAL[i]} pick`));
+    }
+  }
+  lines.push(judged
+    ? step(`now verdict ${kick.verdict}`, `Verdict: ${followedLine(kick)}`)
+    : step('', `Then the verdict: did Spotify follow your kick?`));
+  return `<div class="traj">${lines.join('')}</div>`;
+}
+function kickCard(kick) {
   if (kick.n_since >= SONGS_TO_JUDGE) {
     const headline = VERDICT_WORDS[kick.verdict] || kick.verdict;
-    return `<div class="head ${esc(kick.verdict)}">${esc(headline)}</div>
-      <div class="sub">${followedLine(kick)} · ${kick.n_since} songs in · ${kickLine(kick)}</div>${ruler(kick)}`;
+    return `<div class="head ${esc(kick.verdict)}">${esc(headline)}</div>${trajectory(kick)}${ruler(kick, false)}`;
   }
-  const strength = kick.strength[0].toUpperCase() + kick.strength.slice(1);
-  if (chosen.length === 0) {
-    const headline = shotWord(kick) || strength;
-    return `<div class="head wait">${headline}</div>
-      <div class="sub">${strength} playing${landedElsewhere(kick)} · Spotify's next ${SONGS_TO_JUDGE} songs decide ${picked}</div>${ruler(kick)}`;
-  }
-  return `<div class="head wait">Spotify chose ${chosen.length} of ${SONGS_TO_JUDGE}</div>
-    <div class="sub">${followedLine(kick)} so far · after ${kickLine(kick)}</div>${ruler(kick)}`;
+  const chosen = kick.chosen || [];
+  const headline = chosen.length === 0 ? (shotWord(kick) || 'Kicked') : `Spotify picked ${chosen.length} of ${SONGS_TO_JUDGE}`;
+  return `<div class="head wait">${headline}</div>${trajectory(kick)}${ruler(kick, false)}`;
 }
 
 // Cosine distance from each song to the one before it, in listening order. Spotify's own steps are the grey
@@ -551,15 +755,23 @@ function idleCard(s) {
   if (s.error) return `<div class="head wait">Not yet</div><div class="sub">${esc(s.error)}</div>`;
   if (!s.track) return `<div class="head wait">Not yet</div><div class="sub">Spotify isn't playing — start a song there first.</div>`;
   if (s.spotify && !s.spotify.configured) return `<div class="head wait">Not yet</div><div class="sub">Add your Spotify app's credentials in settings so names can become tracks.</div>`;
-  if (!pool.ready) return `<div class="head wait">Not yet</div><div class="sub">${pool.building ? 'Finding your first picks…' : 'Listening — picks come once a song has been measured.'}</div>`;
-  const bands = pool.bands || {};
-  const have = ['tap', 'kick', 'boot'].filter(b => bands[b]);
+  if (!pool.ready) {
+    const where = pool.lean ? ` inside “${esc(pool.lean)}”` : '';
+    return `<div class="head wait">No subs yet</div><div class="sub">${pool.building ? `<span class="pulse">Scouting subs${where}…</span> a kick will wait for them.` : 'Listening — subs come once a song has been measured.'}</div>`;
+  }
   return `<div class="head wait">Wind it up</div>
-    <div class="sub">${pool.ready} pick${pool.ready === 1 ? '' : 's'} measured · ${have.length === 3 ? 'tap, kick or boot' : have.length ? have.join(' or ') + ' for now' : 'measuring…'}</div>`;
+    <div class="sub">Waiting on the bench, warmed up and measured:</div>${benchBlock(pool)}`;
 }
 
+let scaleNow = { typical_step: 0.1, far: 0.4 };   // the ruler's absolute cosine marks, from the latest status
 function renderKick(s) {
-  document.getElementById('hint').textContent = poolHint(s.pool);
+  window.lastStatus = s;
+  if (leanTransition && s.pool && s.pool.ready) { leanTransition = false; showing = null; }
+  if (s.state) scaleNow = s.state;
+  document.getElementById('hintText').textContent = poolHint(s.pool);
+  document.getElementById('hint').classList.toggle('live', !!(s.pool && s.pool.building));
+  document.getElementById('hint').classList.toggle('playing', !!(s.player && s.player.state === 'playing'));
+  if (document.body.classList.contains('pool')) renderPool(s.pool || {});
   if (showing) return;
   setContent(s.kick ? kickCard(s.kick) : idleCard(s));
 }
@@ -574,18 +786,37 @@ function fitHeadline() {
   while (head.scrollWidth > head.clientWidth && size > HEAD_MIN_PX) { size -= 1; head.style.fontSize = `${size}px`; }
   if (head.scrollWidth > head.clientWidth) { head.style.whiteSpace = 'normal'; head.style.textOverflow = 'clip'; }
 }
-function setContent(html) { document.getElementById('content').innerHTML = html; fitHeadline(); }
+const MARQ_PX_PER_S = 22;   // glide speed; the rests at each end are part of the keyframes
+function fitMarquees(root = document) {
+  root.querySelectorAll('.marq').forEach(box => {
+    const inner = box.firstElementChild;
+    if (!inner) return;
+    const overflow = inner.scrollWidth - box.clientWidth;
+    const scroll = overflow > 2;
+    if (scroll) {
+      box.style.setProperty('--marq-shift', `${-overflow - 6}px`);
+      box.style.setProperty('--marq-dur', `${Math.max(4, (overflow / MARQ_PX_PER_S) * 2 + 2).toFixed(1)}s`);
+    }
+    box.classList.toggle('scroll', scroll);
+  });
+}
+function setMarqueeText(box, text) {
+  const inner = box.firstElementChild;
+  if (inner.textContent === text) return;   // an unchanged text keeps its glide going; resetting would jerk it
+  inner.textContent = text;
+  fitMarquees(box.parentElement);
+}
+function setContent(html) { document.getElementById('content').innerHTML = html; fitHeadline(); fitMarquees(document.getElementById('content')); }
 async function tick() {
   try { const s = await api.status();
     const tt = document.getElementById('npTitle'), ta = document.getElementById('npArtist'), bar = document.getElementById('npBar');
-    if (!s.ready) { tt.textContent = s.error || 'loading the ears…'; ta.textContent = (s.log || []).slice(-1)[0] || ''; return; }
+    if (!s.ready) { setMarqueeText(tt, s.error || 'loading the ears…'); setMarqueeText(ta, (s.log || []).slice(-1)[0] || ''); return; }
     paintLove(!!(s.track && s.track.loved));
     paintArt(s.track && s.track.artwork);
-    if (s.error) { tt.textContent = 'Spotify'; ta.textContent = s.error; }
-    else if (s.track) { tt.textContent = s.track.name; ta.textContent = s.track.artist + (s.track.album ? ' · ' + s.track.album : ''); bar.style.width = s.track.duration ? `${Math.min(100, 100 * s.track.position / s.track.duration)}%` : '0'; }
-    else { tt.textContent = 'nothing playing'; ta.textContent = 'start a song in Spotify'; bar.style.width = '0'; }
+    if (s.error) { setMarqueeText(tt, 'Spotify'); setMarqueeText(ta, s.error); }
+    else if (s.track) { setMarqueeText(tt, s.track.name); setMarqueeText(ta, s.track.artist + (s.track.album ? ' · ' + s.track.album : '')); bar.style.width = s.track.duration ? `${Math.min(100, 100 * s.track.position / s.track.duration)}%` : '0'; }
+    else { setMarqueeText(tt, 'nothing playing'); setMarqueeText(ta, 'start a song in Spotify'); bar.style.width = '0'; }
     paint(s.player);
-    if (!window.digLoaded) { document.getElementById('dig').value = s.dig; document.getElementById('digV').textContent = ['any', 'hits off', 'deep'][s.dig]; window.digLoaded = true; }
     if (!window.brainLoaded) { const radio = document.querySelector(`input[name="brain"][value="${s.brain}"]`); if (radio) radio.checked = true; window.brainLoaded = true; }
     if (s.spotify) paintCredentials(s.spotify);
     if (!document.body.classList.contains('lean')) { window.currentLean = s.lean || ''; paintLeanButton(window.currentLean); }

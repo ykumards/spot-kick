@@ -1,7 +1,7 @@
 """Command-line entry point.
 
     spotkick                       menubar app (needs the app extra)
-    spotkick kick <tap|kick|boot|0.0-1.0> [--dig N] [--wait N | --no-wait]
+    spotkick kick <tap|kick|boot|0.0-1.0> [--wait N | --no-wait]
     spotkick watch                 poll Spotify, ingest plays, keep the pool warm, print verdicts (Ctrl-C to stop)
     spotkick status                what the store knows
     spotkick prompt                print the Brain's context as it would be sent (nothing is sent)
@@ -11,12 +11,13 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import time
 
 from . import config
+from .kick.bands import STRENGTH_MAGNITUDE
 
-STRENGTH_MAGNITUDE = {"tap": 0.165, "kick": 0.5, "boot": 0.83}
 POLL_INTERVAL_S = 2.5
 
 
@@ -75,8 +76,6 @@ def watch(session, *, stop_after_songs: int | None = None) -> int:
 
 def cmd_kick(args: argparse.Namespace) -> int:
     cfg = config.load()
-    if args.dig is not None:
-        cfg.dig = args.dig
     session = build_session(cfg)
 
     observation = session.observe()
@@ -136,7 +135,7 @@ def cmd_prompt(args: argparse.Namespace) -> int:
 
     cfg = config.load()
     context = Context.from_store(Store(cfg.db_path))
-    print(candidates_prompt(context, n=cfg.n_candidates, dig=cfg.dig))
+    print(candidates_prompt(context, n=cfg.n_candidates, lean=cfg.lean or None))
     return 0
 
 
@@ -167,20 +166,39 @@ def cmd_connect(args: argparse.Namespace) -> int:
 
 
 def cmd_app(args: argparse.Namespace) -> int:
+    if not args.foreground and sys.stdin.isatty():
+        return launch_detached()
     from .app.menubar import main as run_app
 
     return run_app()
+
+
+def launch_detached() -> int:
+    """From a terminal, the menubar app belongs to the menu bar, not to the shell: start it in its own session with
+    its output in the app log, and give the prompt back. `--foreground` keeps the old behaviour for debugging."""
+    log_path = config.HOME / "app.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a") as log_file:
+        subprocess.Popen(
+            [sys.executable, "-m", "spotkick", "--foreground"],
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            start_new_session=True,
+        )
+    print(f"Spot Kick is in the menu bar · log: {log_path}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="spotkick", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    parser.add_argument("--foreground", action="store_true", help="run the menubar app attached to this terminal")
     commands = parser.add_subparsers(dest="command")
 
     kick = commands.add_parser("kick", help="kick the queue a measured distance")
     kick.add_argument("magnitude", type=parse_magnitude, help="tap | kick | boot, or a number in 0..1")
-    kick.add_argument("--dig", type=int, choices=(0, 1, 2), help="how far off the beaten path the brain should look")
     kick.add_argument(
         "--wait", type=int, default=2, metavar="N", help="keep watching until N Spotify songs have followed (default 2)"
     )

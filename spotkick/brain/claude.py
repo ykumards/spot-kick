@@ -33,16 +33,16 @@ class ClaudeCode:
         self.model = model
         self.binary = binary
 
-    def base_command(self, *, tools: str, max_turns: int) -> list[str]:
-        """The `claude -p` invocation shared by every call: one JSON result, no saved session, only the named
-        tools. `--tools` is variadic and would swallow the prompt, so a boolean flag comes last."""
-        command = [self.binary, "-p", "--model", self.model, "--output-format", "json", "--tools", tools]
-        command += ["--max-turns", str(max_turns), "--settings", NO_THINKING_SETTINGS, "--no-session-persistence"]
+    def base_command(self) -> list[str]:
+        """The `claude -p` invocation: one JSON result, no saved session, no tools. `--tools` is variadic and would
+        swallow the prompt, so a boolean flag comes last."""
+        command = [self.binary, "-p", "--model", self.model, "--output-format", "json", "--tools", NO_TOOLS]
+        command += ["--max-turns", str(PROPOSE_MAX_TURNS), "--settings", NO_THINKING_SETTINGS]
+        command += ["--no-session-persistence"]
         return command
 
     def complete_json(self, prompt: str, schema: dict, *, timeout: int = 240) -> dict:
-        command = self.base_command(tools=NO_TOOLS, max_turns=PROPOSE_MAX_TURNS)
-        command += ["--json-schema", json.dumps(schema), prompt]
+        command = self.base_command() + ["--json-schema", json.dumps(schema), prompt]
         with tempfile.TemporaryDirectory() as workdir:
             result = cli.run(command, timeout=timeout, tool="claude", cwd=workdir, extra_env=NO_THINKING_ENV)
         if result.returncode != 0:

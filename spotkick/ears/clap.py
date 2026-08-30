@@ -103,10 +103,6 @@ class Embedder:
         self._session = session
         return session, mel_filters
 
-    @property
-    def loaded(self) -> bool:
-        return self._session is not None
-
     def embed_audio(self, wave: np.ndarray) -> np.ndarray:
         """Mono float32 at 48 kHz → unit vector (512). Mean of up to `n_clips` deterministic 10 s crops."""
         session, mel_filters = self._load()

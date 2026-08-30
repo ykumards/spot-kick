@@ -8,6 +8,6 @@ Last plays, most recent first:
 - Soft Machine — Hazard Profile Pt.1
 Most played artists, all time: Alice Coltrane (1), Milton Nascimento (1), Soft Machine (1), Can (0)
 
-Propose 4 real songs, each in a DIFFERENT direction, all labelled 'far' (a boot: a distant but musically defensible destination, the kind of thing this listener would never be recommended). Earlier picks at this reach measured closer to the listener than intended, so lean further out.
-Spotify's autoplay will continue FROM the chosen song, so each needs a strong, coherent identity a recommender can build a queue around — not a novelty, not a one-off. Never repeat anything listed above. Skip the obvious: no song that would sit on a 'best of the genre' list, no artist's single most famous track. Prefer album cuts and artists of moderate fame.
+Propose 4 real songs, each in a DIFFERENT direction, all labelled 'far' (a boot: a distant but musically defensible destination, the kind of thing this listener would never be recommended; go deep — lesser-known artists, deep cuts, regional scenes, reissues, a song a serious fan of the direction would name, not a tourist).
+Spotify's autoplay will continue FROM the chosen song, so each needs a strong, coherent identity a recommender can build a queue around — not a novelty, not a one-off. Never repeat anything listed above.
 For each: a 3-6 word direction, the real artist and title, and a one-line why. No links, no markdown.

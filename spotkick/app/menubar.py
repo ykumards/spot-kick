@@ -27,6 +27,7 @@ from AppKit import (
     NSEventMaskRightMouseDown,
     NSEventMaskRightMouseUp,
     NSEventTypeRightMouseUp,
+    NSImage,
     NSMakeRect,
     NSMenu,
     NSMenuItem,
@@ -50,16 +51,16 @@ if TYPE_CHECKING:  # runtime imports of these are deferred (see load_session / p
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 UI_PAGE = UI_DIR / "index.html"
+STATUS_ITEM_ICON = UI_DIR / "menubar-icon.png"
+STATUS_ITEM_ICON_SIZE = (18.0, 18.0)
 PANEL_WIDTH = 380
-PANEL_HEIGHT = 540
+PANEL_HEIGHT = 600
 OBSERVE_INTERVAL_S = 2.5
 LOG_LINES_KEPT = 200
 LOG_LINES_SHOWN = 3
 STATS_KICKS_SHOWN = 30
 MAX_LEAN_LENGTH = 120
 LOG_FILE_NAME = "app.log"
-ALLOWED_DIG_LEVELS = (0, 1, 2)
-STATUS_ITEM_TITLE = "🦵"
 EDIT_MENU_ITEMS = (
     ("Undo", "undo:", "z"),
     ("Cut", "cut:", "x"),
@@ -186,7 +187,6 @@ class Api:
             **self.last,
             "player": player_state(),
             "log": self.lines[-LOG_LINES_SHOWN:],
-            "dig": self.cfg.dig,
             "lean": self.cfg.lean,
             "brain": self.cfg.llm_backend,
             "brains": list(BACKEND_NAMES),
@@ -244,6 +244,15 @@ class Api:
         self.observe()
         return {key: jsonable(item) for key, item in result.items()}
 
+    def kick_pick(self, cand_id: int) -> dict:
+        """Send on one named sub from the bench."""
+        if self.session is None:
+            raise RuntimeError(self.error or "still loading")
+        with self._observing:
+            result = self.session.kick_pick(int(cand_id))
+        self.observe()
+        return {key: jsonable(item) for key, item in result.items()}
+
     def transport(self, command: str) -> dict:
         from ..player import spotify  # deferred: see player_state
 
@@ -266,16 +275,6 @@ class Api:
             track, loved = self.session.toggle_love()
         self.observe()
         return {"loved": loved, "artist": track.artist, "title": track.title}
-
-    def set_dig(self, dig: int) -> int:
-        dig = int(dig)
-        if dig not in ALLOWED_DIG_LEVELS:
-            raise ValueError("dig must be 0, 1, or 2")
-        if dig != self.cfg.dig:
-            self.cfg.dig = dig
-            if self.session is not None:
-                self.session.invalidate_pool()
-        return self.cfg.dig
 
     def set_lean(self, lean: str) -> str:
         """The listener's lean in their own words, kept in config.toml; the picks proposed without it are dropped."""
@@ -313,8 +312,8 @@ class Bridge(NSObject):
     """WKScriptMessageHandler: each JS call becomes a background call on `Api`, answered through window.__resolve."""
 
     ALLOWED_METHODS = frozenset(
-        {"status", "kick", "transport", "love", "set_dig", "set_lean", "set_brain", "set_spotify_credentials", "stats",
-         "quit"}
+        {"status", "kick", "kick_pick", "transport", "love", "set_lean", "set_brain", "set_spotify_credentials",
+         "stats", "quit"}
     )
 
     def initWithApi_webview_(self, api: Api, webview):
@@ -405,7 +404,15 @@ class LegApp(NSObject):
     def build_status_item(self):
         item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
         button = item.button()
-        button.setTitle_(STATUS_ITEM_TITLE)
+        self.status_icon = NSImage.alloc().initWithContentsOfFile_(str(STATUS_ITEM_ICON))
+        if self.status_icon is None:
+            raise RuntimeError(f"menubar icon is missing: {STATUS_ITEM_ICON}")
+        self.status_icon.setSize_(STATUS_ITEM_ICON_SIZE)
+        self.status_icon.setTemplate_(True)  # macOS supplies the correct light/dark menubar tint
+        button.setImage_(self.status_icon)
+        button.setTitle_("")
+        button.setToolTip_("Spot Kick")
+        button.setAccessibilityLabel_("Spot Kick")
         button.setTarget_(self)
         button.setAction_("toggle:")
         button.sendActionOn_(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)

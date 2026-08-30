@@ -1,5 +1,5 @@
 {
-  "generated_from_commit": "d2ac79ddccf33c65ca87ed43c00b8db19ce778a2",
+  "generated_from_commit": "be88f57d242276868b676246882dde0a016a537d",
   "sample_rate": 48000,
   "tolerances": {
     "logmel_max_abs_db": 0.002899169921875,
@@ -181,30 +181,13 @@
     {
       "file": "prompt_plain.txt",
       "kwargs": {
-        "n": 6,
-        "dig": 1
-      }
-    },
-    {
-      "file": "prompt_deep.txt",
-      "kwargs": {
-        "n": 6,
-        "dig": 2
-      }
-    },
-    {
-      "file": "prompt_follow.txt",
-      "kwargs": {
-        "n": 4,
-        "dig": 1,
-        "direction_hint": "spiritual jazz, modal drift"
+        "n": 6
       }
     },
     {
       "file": "prompt_far.txt",
       "kwargs": {
         "n": 4,
-        "dig": 1,
         "reach": "far"
       }
     },
@@ -212,7 +195,6 @@
       "file": "prompt_lean.txt",
       "kwargs": {
         "n": 6,
-        "dig": 1,
         "lean": "melancholic, Portuguese"
       }
     }

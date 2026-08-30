@@ -88,18 +88,26 @@ llm_reasoning = "low"
 claude_model  = "sonnet"            # Claude Code's model
 ```
 
+### The bench
+
+While you listen, the app asks the brain for candidates, fetches their previews, embeds and measures them — before
+you kick. That is the bench, shown on the main screen per strength: the song that would play right now at a tap,
+a kick, a boot, and whether a band is still being found. Tap it for the whole list with each pick's place on your
+ruler. A kick plays the bench pick whose measured distance is nearest your wind-up, so it never waits on the brain;
+bands the bench lacks are topped up in the background, and picks survive restarts and lean changes because every
+one is kept in the local library with its embedding.
+
 ### Steering the brain
 
-Two knobs, both plain text in the prompt. **Lean**, the button next to the leg, narrows the search space: tick up
-to ten genres and moods, add your own words (a language, an era, an instrument), and every pick stays inside them
-while the kick strength still varies within. It is stored as one comma-joined line, `lean = "jazz, calm,
-Portuguese"`. **Digging**, in settings, is how far below the surface it
-looks (any · hits off · deep). Changing either drops the current picks and rebuilds them in the background.
+One knob on the leg, one on the side. **Strength** — tap, kick, boot — is how far the pick lands in sound, on your
+own scale, and a harder kick also digs deeper: a tap may be a song you half know, a boot is one you would never be
+recommended. **Lean**, the button next to the leg, narrows the search space: tick up to ten genres and moods, add
+your own words (a language, an era, an instrument), and every pick stays inside them at any strength — the lean
+wins over everything else the brain is told. It is stored as one comma-joined line, `lean = "jazz, calm,
+Portuguese"`; changing it drops the current picks and rebuilds them in the background.
 
-```toml
-dig  = 1                            # 0 any · 1 hits off · 2 deep
-lean = ""                           # empty = no lean
-```
+Launching `spotkick` from a terminal puts it in the menu bar and hands the prompt back; its output goes to
+`~/.spotkick/app.log`. `spotkick --foreground` keeps it attached to the terminal for debugging.
 
 Useful terminal commands:
 

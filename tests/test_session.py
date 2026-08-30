@@ -89,7 +89,7 @@ class FakeBrain:
 
 def fake_preview(artist: str, title: str, *, country: str = "us", session=None) -> previews.Preview:
     number = title_number(title)
-    return previews.Preview(artist, title, None, number, f"http://p/{number}", 200.0, None)
+    return previews.Preview(artist, title, None, number, f"http://p/{number}", 200.0)
 
 
 class FakeSpotifyAPI(SpotifyAPI):
@@ -178,6 +178,8 @@ def test_kick_picks_by_measured_distance_and_judges_the_continuation(world):
     assert listener.active.n_since == 2
     snap = listener.snapshot()["kick"]
     assert snap["verdict"] in ("returned", "bent")
+    assert [pick["title"] for pick in snap["chosen"]] == ["Song 5", "Song 6"]
+    assert all(pick["along"] is not None and pick["along"] < 0.6 for pick in snap["chosen"])   # home songs: near 0
     assert snap["n_since"] == 2
     assert store.kick(kick["id"])["verdict"] == snap["verdict"]
     frozen = (snap["followed"], snap["verdict"])
@@ -299,7 +301,8 @@ def test_prefetch_survives_a_brain_that_is_rate_limited(world, monkeypatch):
 
 def test_an_empty_band_is_topped_up_in_the_background(world):
     """The fake brain's picks all measure far, so after the first set the tap and kick bands are empty: the next
-    observation asks for a 'near' top-up (one band at a time), merges it, and does not ask again while cooling down."""
+    observation asks for a 'near' top-up (one band at a time), merges it, then moves to the next empty band before
+    coming back to correct the first."""
     listener, store, player, brain = world
     for number in range(4):
         play_through(player, listener, number)
@@ -317,10 +320,12 @@ def test_an_empty_band_is_topped_up_in_the_background(world):
     listener.observe()                                         # tap is still empty (the picks measured far)...
     assert wait(lambda: len(brain.calls) >= 3)
     assert "all labelled 'adjacent'" in brain.calls[2]         # ...so the next band is asked for, not tap again
-    calls_before = len(brain.calls)
-    listener.observe()
-    time.sleep(0.2)
-    assert len(brain.calls) == calls_before                    # every empty band is cooling down: no loop
+    assert wait(lambda: not listener._pool_building())
+    listener.observe()                                         # both bands have missed once: tap gets a correction
+    assert wait(lambda: len(brain.calls) >= 4)
+    assert "all labelled 'near'" in brain.calls[3]
+    assert "did not land" in brain.calls[3]                    # ...told where its earlier picks measured
+    assert wait(lambda: not listener._pool_building())
 
     again = new_session(Config(), store, brain, player)        # a restart restores the merged pool
     assert again.ready() == listener.ready()
@@ -484,6 +489,66 @@ def test_a_kicked_song_leaves_the_library(world):
     again = new_session(Config(), store, _brain, player)      # a restart restores the library, minus the kick
     assert again.pool is not None and again.pool.set_id == session.LIBRARY_SET_ID
     assert {item.track.id for item in again.pool.items} == after
+
+
+def test_the_bench_shows_every_pick_by_band_nearest_target_first(world):
+    listener, _store, player, _brain = world
+    assert all(band["state"] == "empty" and band["picks"] == [] for band in listener.bench().values())
+    for number in range(3):
+        play_through(player, listener, number)
+    assert wait(lambda: listener.ready() > 0 and not listener._pool_building())
+    bench = listener.bench()
+    assert sum(len(band["picks"]) for band in bench.values()) == listener.ready()
+    for name, band in bench.items():
+        assert band["state"] in ("ready", "resting", "empty")
+        assert (band["state"] == "ready") == bool(band["picks"])
+        distances = [pick["distance"] for pick in band["picks"]]
+        assert distances == sorted(distances)                   # nearest first, the ruler's order
+        if band["picks"]:
+            target = bands.TARGET_REL[name]
+            gaps = [abs(pick["rel"] - target) for pick in band["picks"]]
+            assert abs(band["would_play"]["rel"] - target) == min(gaps)
+    assert listener.snapshot()["pool"]["bench"].keys() == {"tap", "kick", "boot"}
+
+
+def test_an_empty_band_is_retried_with_the_misses_fed_back(world):
+    """The brain keeps naming songs that measure close; the harness keeps asking, telling it where each landed."""
+    listener, _store, player, brain = world
+    brain.next_ids = iter(range(10, 99))                      # every proposal is a home song: a tap, never a boot
+    for number in range(3):
+        play_through(player, listener, number)
+    assert wait(lambda: listener.ready() > 0 and not listener._pool_building())
+    assert listener.pool_bands()["boot"] == 0
+    for _ in range(5):                                         # kick and boot each get a first ask, then corrections
+        listener.observe()
+        assert wait(lambda: not listener._pool_building())
+    assert listener._band_attempts["boot"] >= 2
+    corrections = [prompt for prompt in brain.calls if "did not land" in prompt]
+    assert corrections, "the retry must tell the brain where its picks measured"
+    assert "measured as a small step" in corrections[-1]
+    assert listener.bench()["boot"]["state"] == "resting"       # third try waits its turn, not ten minutes
+    listener.cfg.lean = "country"                              # the same misses under a lean: the lean is the cap
+    assert listener.bench()["boot"]["state"] == "capped"
+    listener.cfg.lean = ""
+    assert listener.band_retry_delay("boot") == session.BAND_RETRY_DELAYS_S[2]
+    listener.invalidate_pool()                                  # a settings change starts the count over
+    assert listener._band_attempts == {} and listener._band_misses == {}
+
+
+def test_pointing_at_a_sub_sends_that_one_on(world):
+    listener, store, player, _brain = world
+    for number in range(3):
+        play_through(player, listener, number)
+    assert wait(lambda: listener.ready() > 0 and not listener._pool_building())
+    bench = listener.bench()
+    band, pick = next((band, entry["picks"][-1]) for band, entry in bench.items() if entry["picks"])
+    out = listener.kick_pick(pick["cand_id"])
+    assert out["track"].artist == pick["artist"] and player.played[-1] == out["track"].spotify_uri
+    assert out["strength"] == band                              # the strength is what the pick measures as
+    assert store.last_kick()["strength"] == band
+    assert all(item.cand_id != pick["cand_id"] for item in listener.pool.items)   # off the bench, on the pitch
+    with pytest.raises(RuntimeError):
+        listener.kick_pick(pick["cand_id"])                     # cannot be sent on twice
 
 
 def test_step_series_is_the_distance_between_consecutive_plays(world):

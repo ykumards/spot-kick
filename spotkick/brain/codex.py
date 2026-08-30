@@ -26,11 +26,10 @@ class Codex:
         self.reasoning = reasoning
         self.binary = binary
 
-    def base_command(self, *extra_flags: str) -> list[str]:
-        """The `codex exec` invocation shared by every call: sandboxed read-only, our model, our reasoning effort."""
+    def base_command(self) -> list[str]:
+        """The `codex exec` invocation: sandboxed read-only, our model, our reasoning effort."""
         return [
             self.binary,
-            *extra_flags,
             "exec",
             "--skip-git-repo-check",
             "-s", "read-only",

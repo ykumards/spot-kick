@@ -45,21 +45,3 @@ def run(
     except subprocess.TimeoutExpired as error:
         raise BrainError(f"{tool} timed out after {timeout}s") from error
 
-
-def run_quietly(command: list[str], *, timeout: int, cwd: str | None = None) -> str | None:
-    """`run` for lookups that are allowed to fail: stdout on success, None on any error."""
-    try:
-        result = subprocess.run(
-            command,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            cwd=cwd,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout

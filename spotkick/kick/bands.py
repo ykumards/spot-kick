@@ -13,8 +13,6 @@ import numpy as np
 
 STRENGTHS = ("tap", "kick", "boot")
 TARGET_REL = {"tap": 0.25, "kick": 0.75, "boot": 1.3}   # where each strength should land on the listener's scale
-ACCEPT_NEAR = 0.75                                      # play-past-half probability at rel 0 (Yambda response curve)
-ACCEPT_FAR = 0.63                                       # ... and at rel 1
 DEFAULT_SCALE = (0.10, 0.40)                            # typical step, far — before we have 3 plays
 MIN_GAP = 0.10                                          # far − step never smaller than this
 
@@ -22,12 +20,16 @@ MIN_GAP = 0.10                                          # far − step never sma
 STRENGTH_CEILINGS = (("tap", 0.33), ("kick", 0.66))
 STRENGTH_ABOVE_CEILINGS = "boot"
 
-# target_for: the wind-up magnitude maps to a target rel, piecewise-linear through the band centers
-TARGET_MAGNITUDES = (0.0, 0.165, 0.5, 0.83, 1.0)
-TARGET_RELS = (0.0, TARGET_REL["tap"], TARGET_REL["kick"], TARGET_REL["boot"], 1.6)
+# The wind-up magnitude at the centre of each strength: what `spotkick kick tap|kick|boot` means.
+STRENGTH_MAGNITUDE = {"tap": 0.165, "kick": 0.5, "boot": 0.83}
 
-# band_for: the rel below which each band applies, checked in order
-BAND_CEILINGS = (("tap", 0.5), ("kick", 1.0))
+# target_for: the wind-up magnitude maps to a target rel, piecewise-linear through the band centers
+TARGET_MAGNITUDES = (0.0, *STRENGTH_MAGNITUDE.values(), 1.0)
+TARGET_RELS = (0.0, *TARGET_REL.values(), 1.6)
+
+# band_for: the rel below which each band applies, checked in order. The middle band is the widest: most picks
+# land near the middle of the scale, and a kick aimed at 0.75 should own a fair margin either side of it.
+BAND_CEILINGS = (("tap", 0.35), ("kick", 1.15))
 BAND_ABOVE_CEILINGS = "boot"
 
 # verdict: the followed fraction below which each verdict applies, checked in order
@@ -69,13 +71,9 @@ def target_for(magnitude: float) -> float:
     return float(np.interp(clamp_unit(magnitude), TARGET_MAGNITUDES, TARGET_RELS))
 
 
-def acceptance(rel: float) -> float:
-    return ACCEPT_NEAR + (ACCEPT_FAR - ACCEPT_NEAR) * float(np.clip(rel, 0, 1))
-
-
 @dataclass
 class ListenerState:
-    """EWMA of the songs played, on the unit sphere: x_t = normalize(α x_{t-1} + (1−α) e_t). A skip counts less.
+    """EWMA of the songs played, on the unit sphere: x_t = normalize(α x_{t-1} + (1−α) e_t).
 
     `history` feeds the distance scale, so it holds only the songs the recommender chose: a kicked song moves the
     state (it did play) but must not define what a "typical step" is, or the ruler ends up measuring the kicks."""
@@ -83,13 +81,12 @@ class ListenerState:
     vector: np.ndarray | None = None
     history: list[np.ndarray] = field(default_factory=list)
 
-    def update(self, embedding: np.ndarray, weight: float = 1.0, *, counts_for_scale: bool = True) -> None:
+    def update(self, embedding: np.ndarray, *, counts_for_scale: bool = True) -> None:
         embedding = np.asarray(embedding, dtype=np.float32)
         if self.vector is None:
             self.vector = normalize(embedding.copy())
         else:
-            keep = 1.0 - (1.0 - self.alpha) * weight
-            self.vector = normalize(keep * self.vector + (1.0 - keep) * embedding)
+            self.vector = normalize(self.alpha * self.vector + (1.0 - self.alpha) * embedding)
         if counts_for_scale:
             self.history.append(embedding)
             del self.history[:-HISTORY_KEEP]
@@ -100,12 +97,15 @@ class ListenerState:
         return float(1.0 - self.vector @ embedding)
 
     def scale(self) -> tuple[float, float]:
-        """(typical step, far) = median and 95th percentile of pairwise distances among the last 20 plays."""
+        """(typical step, far) = median and 95th percentile of the distances from the centre of the last 20
+        Spotify-chosen plays to each of them: the same kind of yardstick every candidate is measured with (distance
+        to a mean), and one that a kick cannot move. Song-to-song pairwise distances run about twice as large as
+        distances to a mean, and using them here once made every candidate read as closer than a typical step."""
         if len(self.history) < SCALE_MIN_PLAYS:
             return DEFAULT_SCALE
         recent = np.stack(self.history[-SCALE_WINDOW:])
-        pairwise = 1.0 - recent @ recent.T
-        distances = pairwise[np.triu_indices(len(recent), 1)]
+        centre = normalize(recent.mean(axis=0))
+        distances = 1.0 - recent @ centre
         step = float(np.quantile(distances, 0.5))
         far = float(np.quantile(distances, 0.95))
         # a few near-identical plays must not make every song look far
@@ -125,7 +125,6 @@ class Measured:
     distance: float
     rel: float
     band: str
-    acceptance: float
 
 
 def measure(state: ListenerState, embeddings: list[np.ndarray]) -> list[Measured]:
@@ -133,7 +132,7 @@ def measure(state: ListenerState, embeddings: list[np.ndarray]) -> list[Measured
     for index, embedding in enumerate(embeddings):
         distance = state.distance(embedding)
         rel = state.rel(distance)
-        measured.append(Measured(index, distance, rel, state.band_for(distance), acceptance(rel)))
+        measured.append(Measured(index, distance, rel, state.band_for(distance)))
     return measured
 
 

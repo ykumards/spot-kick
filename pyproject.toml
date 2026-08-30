@@ -17,7 +17,6 @@ dependencies = [
 
 [project.optional-dependencies]
 export = ["torch>=2.2", "transformers>=4.40", "onnx>=1.16"]   # dev only: scripts/export_clap_onnx.py
-app = []                                                       # kept so `pip install -e ".[app]"` keeps working
 dev = ["pytest>=8", "ruff>=0.5", "basedpyright"]
 
 [project.scripts]

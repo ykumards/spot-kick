@@ -1230,7 +1230,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'export'", specifier = ">=2.2" },
     { name = "transformers", marker = "extra == 'export'", specifier = ">=4.40" },
 ]
-provides-extras = ["export", "app", "dev"]
+provides-extras = ["export", "dev"]
 
 [[package]]
 name = "sympy"

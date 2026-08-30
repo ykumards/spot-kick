@@ -20,7 +20,6 @@ class Config:
     claude_model: str = "sonnet"        # Claude Code's model, when llm_backend is claude
     spotify_client_id: str = ""         # your own Spotify app, from developer.spotify.com: names → track ids
                                         # (its secret lives in the Keychain, or SPOTKICK_SPOTIFY_CLIENT_SECRET)
-    dig: int = 1                        # 0 any · 1 hits off · 2 deep
     lean: str = ""                      # a mood/language/anything the brain keeps every pick inside; empty = none
     n_candidates: int = 6
     alpha: float = 0.7                  # listener-state EWMA

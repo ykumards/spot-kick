@@ -12,7 +12,6 @@ from dataclasses import dataclass
 
 BUNDLE = "com.spotify.client"
 URI_RE = re.compile(r"spotify:track:([A-Za-z0-9]{22})")
-URL_RE = re.compile(r"open\.spotify\.com/(?:intl-[a-z]+/)?track/([A-Za-z0-9]{22})")
 
 OSASCRIPT_TIMEOUT_S = 15
 CONFIRM_POLL_S = 1.0
@@ -99,22 +98,13 @@ class Track:
     def label(self) -> str:
         return f"{self.artist} — {self.name}"
 
-    @property
-    def remaining_s(self) -> float:
-        return max(0.0, self.duration_s - self.position_s)
 
-
-def to_uri(link_or_uri: str) -> str | None:
-    """Canonical `spotify:track:<id>` from a URI or an open.spotify.com link; None for anything else."""
-    text = link_or_uri or ""
-    match = URI_RE.search(text) or URL_RE.search(text)
+def to_uri(uri: str) -> str | None:
+    """Canonical `spotify:track:<id>`, or None for anything that is not a track URI."""
+    match = URI_RE.search(uri or "")
     if match is None:
         return None
     return f"spotify:track:{match.group(1)}"
-
-
-def is_running() -> bool:
-    return run_applescript(IS_RUNNING_SCRIPT) == "true"
 
 
 def tell_spotify(script: str) -> str:

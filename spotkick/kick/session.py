@@ -43,7 +43,12 @@ POOL_OFF_TRACK_MIN_AGE_S = 120.0  # a pool built for another song is only replac
 OFF_TARGET_WARN_REL = 0.5      # best candidate's rel further than this from the target is logged, not waited on
 STEPS_SHOWN = 40               # consecutive-song distances the stats screen plots
 BAND_TOP_UP_N = 4              # candidates asked for when one band of the pool has run dry
-BAND_COOLDOWN_S = 10 * 60      # a band that stayed empty after a top-up is not asked for again before this
+BAND_RETRY_N = 6               # ... and on every retry, with the misses fed back
+# An empty band is asked for again and again, each time telling the brain where its last picks measured. The
+# delays only pace the brain's quota: two immediate corrections, then a minute, then five, then ten between tries.
+BAND_RETRY_DELAYS_S = (0.0, 0.0, 60.0, 300.0, 600.0)
+BAND_MISSES_KEPT = 12          # measured misses remembered per band and fed back to the brain
+LEAN_CAP_TRIES = 2             # misses in a row under a lean before we say the lean itself caps the reach
 REACH_FOR_BAND = {"tap": "near", "kick": "adjacent", "boot": "far"}
 SKIP_COMPLETION = 0.3          # leaving a song before this fraction of it counts as a skip
 WARM_STATE_RECENT_ROWS = 30    # store rows scanned to rebuild the listener state ...
@@ -140,7 +145,10 @@ class KickSession:
         self._pool_lock = threading.Lock()
         self._pool_thread: threading.Thread | None = None
         self._band_asked_at: dict[str, float] = {}
+        self._band_attempts: dict[str, int] = {}       # top-ups that came back with nothing in the band, in a row
+        self._band_misses: dict[str, list[dict]] = {}  # what those top-ups produced and where each measured
         self._pool_generation = 0     # bumped by invalidate_pool, so a build started under old settings is dropped
+        self._building_reach: str | None = None   # the reach a running top-up asks for; None when idle or a full build
         self._last_uri: str | None = None
         self._last_track: spotify.Track | None = None
         self._max_pos = 0.0
@@ -245,7 +253,7 @@ class KickSession:
     def _event_context(self) -> dict:
         step, far = self.state.scale()
         return {"typical_step": round(step, 4), "far": round(far, 4), "n_state": len(self.state.history),
-                "kick_id": self._active_kick_id(), "dig": self.cfg.dig, "lean": self.cfg.lean}
+                "kick_id": self._active_kick_id(), "lean": self.cfg.lean}
 
     def _active_kick_id(self) -> int | None:
         if self.active is None:
@@ -359,6 +367,7 @@ class KickSession:
     def _build_pool_quietly(self, for_track_id: int | None, reach: str | None = None) -> None:
         """A prefetch runs in the background with nobody to catch its exceptions, and the brain being rate-limited
         or offline is an ordinary event: log one line and leave the existing pool alone."""
+        self._building_reach = reach
         try:
             if reach is None:
                 self.build_pool(for_track_id)
@@ -368,6 +377,8 @@ class KickSession:
             self.log(f"prefetch skipped: {error}")
         except Exception as error:  # noqa: BLE001 — a daemon thread must not die with a traceback on the log
             self.log(f"prefetch failed: {type(error).__name__}: {error}")
+        finally:
+            self._building_reach = None
 
     def maybe_prefetch(self) -> None:
         """Keep every band of the pool stocked while music plays: a full build when there is no usable pool, else a
@@ -398,21 +409,62 @@ class KickSession:
             counts[self.state.band_for(self.state.distance(item.embedding))] += 1
         return counts
 
+    def bench(self) -> dict[str, dict]:
+        """The pool as the listener sees it: per band, the picks measured into it nearest first, the one a kick of
+        that strength would play now (nearest the band's target), and what the band is doing."""
+        with self._pool_lock:
+            items = list(self.pool.items) if self.pool is not None else []
+        picks: dict[str, list[dict]] = {band: [] for band in bands.STRENGTHS}
+        for item in items:
+            distance = self.state.distance(item.embedding)
+            rel = self.state.rel(distance)
+            band = self.state.band_for(distance)
+            picks[band].append({"cand_id": item.cand_id, "artist": item.track.artist, "title": item.track.title,
+                                "rel": rel, "distance": distance, "direction": item.direction, "why": item.why})
+        building = self._pool_building()
+        now = time.time()
+        result = {}
+        for band in bands.STRENGTHS:
+            ordered = sorted(picks[band], key=lambda pick: pick["distance"])
+            would_play = min(picks[band], key=lambda pick: abs(pick["rel"] - bands.TARGET_REL[band]), default=None)
+            result[band] = {"picks": ordered, "would_play": would_play,
+                            "state": self.band_state(band, len(ordered), building, now)}
+        return result
+
+    def band_state(self, band: str, count: int, building: bool, now: float) -> str:
+        """What an empty band is doing. 'capped' is the measured verdict that the lean itself confines the reach:
+        the brain has been told twice where its picks landed and still nothing inside the lean measures this far."""
+        if building and (self._building_reach is None or self._building_reach == REACH_FOR_BAND[band]):
+            return "building"
+        if count > 0:
+            return "ready"
+        if self.cfg.lean and self._band_attempts.get(band, 0) >= LEAN_CAP_TRIES:
+            return "capped"
+        if self.band_is_waiting(band, now):
+            return "resting"
+        return "empty"
+
     def coverage_line(self) -> str:
         counts = self.pool_bands()
         return " ".join(f"{band} {count}" for band, count in counts.items())
 
+    def band_retry_delay(self, band: str) -> float:
+        """How long an empty band waits before it is asked for again, by how many tries have already missed."""
+        attempts = self._band_attempts.get(band, 0)
+        return BAND_RETRY_DELAYS_S[min(attempts, len(BAND_RETRY_DELAYS_S) - 1)]
+
+    def band_is_waiting(self, band: str, now: float) -> bool:
+        return now - self._band_asked_at.get(band, 0.0) < self.band_retry_delay(band)
+
     def first_empty_band(self) -> str | None:
-        """The first band with nothing in it whose last top-up is not still cooling down: a top-up that came back
-        with nothing measured far enough must not become a loop of brain calls."""
+        """The empty band that is due another try, least-tried first: every band gets its first ask before any gets
+        a second. Every miss is fed back to the brain, so a retry is a correction, not a repeat; the delays between
+        tries only pace the brain's quota."""
         now = time.time()
-        for band, count in self.pool_bands().items():
-            if count > 0:
-                continue
-            if now - self._band_asked_at.get(band, 0.0) < BAND_COOLDOWN_S:
-                continue
-            return band
-        return None
+        due = [band for band, count in self.pool_bands().items() if count == 0 and not self.band_is_waiting(band, now)]
+        if not due:
+            return None
+        return min(due, key=lambda band: self._band_attempts.get(band, 0))
 
     def _pool_is_off_track(self, current_id: int | None, min_age_s: float = POOL_OFF_TRACK_MIN_AGE_S) -> bool:
         """The pool was built while something else was playing and is old enough to be worth replacing."""
@@ -425,21 +477,18 @@ class KickSession:
         for_track_id: int | None,
         *,
         n: int | None = None,
-        direction_hint: str | None = None,
         reach: str | None = None,
+        misses: list[dict] | None = None,
     ) -> Pool:
-        """Ask the Brain for names, then materialize them in parallel. A plain pool (no direction hint) becomes
-        `self.pool`; a follow-up set with a hint is only returned; a `reach` set is one band's worth, returned for
-        `top_up_pool` to merge."""
+        """Ask the Brain for names, then materialize them in parallel. A plain pool becomes `self.pool`; a `reach`
+        set is one band's worth, returned for `top_up_pool` to merge, with the band's earlier misses fed back."""
         started = time.time()
         generation = self._pool_generation
         set_id = uuid.uuid4().hex[:SET_ID_LENGTH]
-        candidates = propose.propose(self.backend, self.store, n=n or self.cfg.n_candidates, dig=self.cfg.dig,
-                                     direction_hint=direction_hint, reach=reach, lean=self.cfg.lean or None,
-                                     log=self.log)
-        purpose = "follow" if direction_hint else "pool"
+        candidates = propose.propose(self.backend, self.store, n=n or self.cfg.n_candidates, reach=reach,
+                                     lean=self.cfg.lean or None, misses=misses, log=self.log)
         candidate_ids = self.store.add_candidates(set_id, [candidate.as_row() for candidate in candidates],
-                                                  for_track_id=for_track_id, purpose=purpose, lean=self.cfg.lean)
+                                                  for_track_id=for_track_id, lean=self.cfg.lean)
         fresh_ids = []
         fresh_candidates = []
         for candidate_id, candidate in zip(candidate_ids, candidates):
@@ -454,7 +503,7 @@ class KickSession:
         if self.is_stale_generation(generation):
             self.log(f"pool {set_id} discarded: settings changed while it was being built")
             return Pool(set_id=set_id, for_track_id=for_track_id, built_at=pool.built_at, items=[])
-        if direction_hint is None and reach is None:
+        if reach is None:
             with self._pool_lock:
                 self.pool = pool
         total_seconds = time.time() - started
@@ -464,15 +513,33 @@ class KickSession:
         return pool
 
     def top_up_pool(self, for_track_id: int | None, reach: str) -> None:
-        """One band's worth of candidates, merged into the live pool. The band is marked asked-for first, so a top-up
-        whose picks all measure elsewhere does not trigger another the moment it finishes."""
+        """One band's worth of candidates, merged into the live pool. A top-up that leaves the band still empty is a
+        miss: what it produced and where each pick measured is remembered and fed back on the next try."""
         band = next(band for band, band_reach in REACH_FOR_BAND.items() if band_reach == reach)
         self._band_asked_at[band] = time.time()
-        fresh = self.build_pool(for_track_id, n=BAND_TOP_UP_N, reach=reach)
-        if not fresh.items:
-            return
-        self.merge_into_pool(fresh)
+        attempts = self._band_attempts.get(band, 0)
+        n = BAND_RETRY_N if attempts else BAND_TOP_UP_N
+        fresh = self.build_pool(for_track_id, n=n, reach=reach, misses=self._band_misses.get(band))
+        if fresh.items:
+            self.merge_into_pool(fresh)
+        self.record_band_outcome(band, fresh)
         self.log(f"pool now {self.coverage_line()}")
+
+    def record_band_outcome(self, band: str, fresh: Pool) -> None:
+        """Did the top-up fill its band? If not, count the miss and remember where its picks actually landed."""
+        if self.pool_bands()[band] > 0:
+            self._band_attempts[band] = 0
+            self._band_misses.pop(band, None)
+            return
+        self._band_attempts[band] = self._band_attempts.get(band, 0) + 1
+        misses = self._band_misses.setdefault(band, [])
+        for item in fresh.items:
+            landed = self.state.band_for(self.state.distance(item.embedding))
+            misses.append({"artist": item.track.artist, "title": item.track.title, "band": landed})
+        del misses[:-BAND_MISSES_KEPT]
+        attempt = self._band_attempts[band]
+        self.log(f"{band} still empty after try {attempt}: {len(fresh.items)} picks landed elsewhere · "
+                 f"next try in {self.band_retry_delay(band):.0f}s with them fed back")
 
     def merge_into_pool(self, fresh: Pool) -> None:
         """Add a set's items to the live pool, or make them the pool if there is none."""
@@ -530,6 +597,8 @@ class KickSession:
         with self._pool_lock:
             self.pool = None
             self._band_asked_at.clear()
+            self._band_attempts.clear()
+            self._band_misses.clear()
             self._pool_generation += 1
 
     def is_stale_generation(self, generation: int) -> bool:
@@ -573,14 +642,7 @@ class KickSession:
             return self.pool, list(self.pool.items)
 
     def kick(self, magnitude: float) -> dict:
-        origin = self.state.vector
-        if origin is None:
-            raise RuntimeError(NO_STATE_MESSAGE)
-        if self.playing_now_or_none() is None:
-            # A Spotify that reports 'stopped' (just launched, or idle) takes `play track` without ever starting.
-            raise RuntimeError(NOT_PLAYING_MESSAGE)
-        if not self.api.configured:
-            raise RuntimeError(NOT_CONFIGURED_MESSAGE)
+        self.check_can_kick()
         if not self.ready():
             self.wait_for_pool()
         pool, items = self.pool_snapshot()
@@ -591,6 +653,45 @@ class KickSession:
             # The pool is topped up band by band in the background; at kick time the nearest measured pick plays
             # now, and the panel says where it actually landed. Waiting on the brain here cost a minute per kick.
             self.log(f"kick lands off target: best rel {best.rel:.2f} vs {target:.2f} among {len(items)}")
+        return self.send_on(pool, items, measured, best, strength=strength, magnitude=magnitude, target=target)
+
+    def kick_pick(self, cand_id: int) -> dict:
+        """The listener points at a sub on the bench: send that one on. Its strength is whatever it measures as —
+        the wind-up is implied by the pick, not the other way round."""
+        self.check_can_kick()
+        pool, items = self.pool_snapshot()
+        index = next((position for position, item in enumerate(items) if item.cand_id == cand_id), None)
+        if index is None:
+            raise RuntimeError("that sub has left the bench; pick another")
+        measured = self.measure_pool(items)
+        best = measured[index]
+        strength = best.band
+        return self.send_on(pool, items, measured, best, strength=strength,
+                            magnitude=bands.STRENGTH_MAGNITUDE[strength], target=bands.TARGET_REL[strength])
+
+    def check_can_kick(self) -> None:
+        if self.state.vector is None:
+            raise RuntimeError(NO_STATE_MESSAGE)
+        if self.playing_now_or_none() is None:
+            # A Spotify that reports 'stopped' (just launched, or idle) takes `play track` without ever starting.
+            raise RuntimeError(NOT_PLAYING_MESSAGE)
+        if not self.api.configured:
+            raise RuntimeError(NOT_CONFIGURED_MESSAGE)
+
+    def send_on(
+        self,
+        pool: Pool,
+        items: list[PoolItem],
+        measured: list[bands.Measured],
+        best: bands.Measured,
+        *,
+        strength: str,
+        magnitude: float,
+        target: float,
+    ) -> dict:
+        """Play the chosen sub, log the kick, and start judging Spotify's response to it."""
+        origin = self.state.vector
+        assert origin is not None  # check_can_kick / kick guard this before choosing
         chosen = items[best.index]
         pre = origin.copy()
         played = self.player.play_and_confirm(chosen.uri)
@@ -615,7 +716,7 @@ class KickSession:
                                "chosen": item is chosen})
         return {"kick_id": kick_id, "strength": strength, "target_rel": target, "track": chosen.track,
                 "direction": chosen.direction, "why": chosen.why, "distance": best.distance, "rel": best.rel,
-                "band": best.band, "acceptance": best.acceptance, "candidates": candidates}
+                "band": best.band, "candidates": candidates}
 
     def follow_through(self, chosen: PoolItem, played: spotify.Track, kick_id: int) -> None:
         """The kick track is playing now: ingest it here so the log has it even if nobody observes again."""
@@ -678,8 +779,27 @@ class KickSession:
     def snapshot(self) -> dict:
         step, far = self.state.scale()
         return {"state": {"n": len(self.state.history), "typical_step": step, "far": far},
-                "pool": {"ready": self.ready(), "building": self._pool_building(), "bands": self.pool_bands()},
+                "pool": {"ready": self.ready(), "building": self._pool_building(), "bands": self.pool_bands(),
+                         "bench": self.bench(), "lean": self.cfg.lean},
                 "kick": self._kick_snapshot()}
+
+    def spotify_picks_since(self, kick: ActiveKick) -> list[dict]:
+        """Spotify's own picks after the kick, each with how far along the kick it sits: the same projection the
+        verdict uses, applied to the song itself rather than the listener state (0 where you were, 1 on the kick)."""
+        plays = [play for play in self.store.plays_since_kick(kick.id) if play["kind"] == "play"]
+        embeddings = self.store.embeddings([play["track_id"] for play in plays])
+        picks: list[dict] = []
+        previous_track_id = None
+        for play in plays:
+            vector = embeddings.get(play["track_id"])
+            if vector is None or play["track_id"] == previous_track_id:
+                continue  # only plays the judge counted: measurable, and not the same song logged twice in a row
+            previous_track_id = play["track_id"]
+            along = bands.followed(kick.pre, kick.kick_vec, vector)
+            picks.append({"artist": play["artist"], "title": play["title"], "along": along})
+            if len(picks) == bands.SONGS_TO_JUDGE:
+                break
+        return picks
 
     def _kick_snapshot(self) -> dict | None:
         kick = self.active
@@ -688,8 +808,7 @@ class KickSession:
         stored = self.store.kick(kick.id)
         if not stored:
             return None
-        chosen = [{"artist": play["artist"], "title": play["title"]}
-                  for play in self.store.plays_since_kick(kick.id) if play["kind"] == "play"]
+        chosen = self.spotify_picks_since(kick)
         return {"id": kick.id, "strength": kick.strength, "direction": kick.direction,
                 "track": self.store.track(stored["track_id"]), "distance": stored["distance"], "rel": stored["rel"],
                 "band": stored["band"], "popularity": stored["popularity"], "n_since": kick.n_since,

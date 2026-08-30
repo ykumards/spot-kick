@@ -8,8 +8,8 @@ Last plays, most recent first:
 - Soft Machine — Hazard Profile Pt.1
 Most played artists, all time: Alice Coltrane (1), Milton Nascimento (1), Soft Machine (1), Can (0)
 
-The listener asked for this lean, and every pick must stay inside it: "melancholic, Portuguese". Vary the reach inside it.
+The listener asked for this lean, and every pick must stay inside it: "melancholic, Portuguese". Take it literally. Where it conflicts with anything else here — how famous or obscure a pick should be, how far a reach goes — the lean wins. Vary the reach inside it.
 
-Propose 6 real songs, each in a DIFFERENT direction: 2 labelled 'near' (a small step: same mood, one notch more adventurous), 2 'adjacent' (a real kick: leave the current pocket for an adjacent one, keep one thread of continuity), 2 'far' (a boot: a distant but musically defensible destination, the kind of thing this listener would never be recommended).
-Spotify's autoplay will continue FROM the chosen song, so each needs a strong, coherent identity a recommender can build a queue around — not a novelty, not a one-off. Never repeat anything listed above. Skip the obvious: no song that would sit on a 'best of the genre' list, no artist's single most famous track. Prefer album cuts and artists of moderate fame.
+Propose 6 real songs, each in a DIFFERENT direction: 2 labelled 'near' (a small step: same mood, one notch more adventurous; a known song is fine if it fits), 2 'adjacent' (a real kick: leave the current pocket for an adjacent one, keep one thread of continuity; skip the obvious — no 'best of the genre' pick, no artist's single most famous track, prefer album cuts and moderate fame), 2 'far' (a boot: a distant but musically defensible destination, the kind of thing this listener would never be recommended; go deep — lesser-known artists, deep cuts, regional scenes, reissues, a song a serious fan of the direction would name, not a tourist).
+Spotify's autoplay will continue FROM the chosen song, so each needs a strong, coherent identity a recommender can build a queue around — not a novelty, not a one-off. Never repeat anything listed above.
 For each: a 3-6 word direction, the real artist and title, and a one-line why. No links, no markdown.

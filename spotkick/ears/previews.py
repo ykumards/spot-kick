@@ -40,7 +40,6 @@ class Preview:
     itunes_id: int
     preview_url: str | None
     duration_s: float | None
-    genre: str | None
 
 
 def normalize_text(text: str) -> str:
@@ -75,7 +74,6 @@ def to_preview(result: dict) -> Preview:
         itunes_id=result["trackId"],
         preview_url=result.get("previewUrl"),
         duration_s=duration_s,
-        genre=result.get("primaryGenreName"),
     )
 
 

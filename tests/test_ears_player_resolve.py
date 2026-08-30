@@ -111,14 +111,12 @@ def test_embed_track_caches_in_store():
 
     without_preview = store.upsert_track("B", "2")
     assert clap.embed_track(store, embedder, without_preview) is None
-    assert not embedder.loaded
 
 
 # ---------------------------------------------------------------- player
-def test_to_uri_accepts_links_and_uris():
+def test_to_uri_accepts_only_track_uris():
     assert spotify.to_uri(GOOD_URI) == GOOD_URI
-    assert spotify.to_uri(f"https://open.spotify.com/intl-de/track/{GOOD_ID}?si=abc") == GOOD_URI
-    assert spotify.to_uri(f"https://open.spotify.com/album/{GOOD_ID}") is None
+    assert spotify.to_uri(f"spotify:album:{GOOD_ID}") is None
     with pytest.raises(ValueError):
         spotify.play("not a uri")
 
@@ -131,7 +129,6 @@ def test_parse_now_playing():
     assert track.duration_s == 732.0
     assert track.position_s == 61.5
     assert track.popularity == 63
-    assert track.remaining_s == 670.5
 
     without_popularity = spotify.parse_now_playing("Zombie\tFela Kuti\tZombie\t732000\t61.5\tspotify:track:x")
     assert without_popularity is not None

@@ -16,9 +16,6 @@ def test_strength_target_are_monotonic():
     targets = [bands.target_for(magnitude) for magnitude in np.linspace(0, 1, 21)]
     assert all(later >= earlier for earlier, later in itertools.pairwise(targets))
     assert abs(bands.target_for(0.5) - 0.75) < 1e-9
-    assert bands.acceptance(0) == 0.75
-    assert bands.acceptance(1) == 0.63
-    assert bands.acceptance(5) == 0.63
 
 
 def test_state_update_and_scale():
@@ -32,7 +29,7 @@ def test_state_update_and_scale():
     state.update(unit(2))
     expected = bands.normalize(0.7 * before + 0.3 * unit(2))
     assert np.allclose(state.vector, expected)
-    state.update(unit(3), weight=0.3)                   # a skip pulls less
+    state.update(unit(3))
     step, far = state.scale()
     assert 0 < step <= far
     assert state.band_for(step) == "tap"

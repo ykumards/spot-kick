@@ -92,18 +92,16 @@ def propose(
     store,
     *,
     n: int = 6,
-    dig: int = 1,
-    direction_hint: str | None = None,
     reach: str | None = None,
     lean: str | None = None,
-    taste: list[str] | None = None,
+    misses: list[dict] | None = None,
     min_fresh: int = 3,
     timeout: int = 240,
     log: Logger = ignore_log,
 ) -> list[Candidate]:
     """Candidates the listener hasn't already played/kicked/picked, with the rejects kept (marked) for the log."""
-    context = Context.from_store(store, taste=taste)
-    first_prompt = candidates_prompt(context, n=n, dig=dig, direction_hint=direction_hint, reach=reach, lean=lean)
+    context = Context.from_store(store)
+    first_prompt = candidates_prompt(context, n=n, reach=reach, lean=lean, misses=misses)
     candidates = ask_brain(backend, first_prompt, timeout)
     seen_keys: set[str] = set()
     mark_rejects(candidates, store, seen_keys)
@@ -112,8 +110,7 @@ def propose(
         return candidates
     rejects = [f"{candidate.artist} — {candidate.title}" for candidate in candidates if candidate.rejected_reason]
     log(f"brain: only {len(fresh)} fresh of {len(candidates)}; asking again")
-    retry_prompt = candidates_prompt(context, n=n, dig=dig, direction_hint=direction_hint, rejects=rejects,
-                                     reach=reach, lean=lean)
+    retry_prompt = candidates_prompt(context, n=n, rejects=rejects, reach=reach, lean=lean, misses=misses)
     more = ask_brain(backend, retry_prompt, timeout)
     mark_rejects(more, store, seen_keys)
     return candidates + more

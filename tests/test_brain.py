@@ -50,7 +50,7 @@ def seeded_store() -> Store:
 
 # ------------------------------------------------------------------ prompts
 def test_context_lines_are_capped_and_tagged():
-    context = Context.from_store(seeded_store(), taste=["afrobeat & highlife", "krautrock-adjacent pop"])
+    context = Context.from_store(seeded_store())
     lines = context.lines()
     text = "\n".join(lines)
     assert lines[0] == "Last plays, most recent first:"
@@ -62,7 +62,6 @@ def test_context_lines_are_capped_and_tagged():
     assert "not this vein: Stereolab — Ping Pong" in text
     assert "Directions already kicked toward (choose different ones): brazilian soul" in text
     assert "Artists already kicked to, avoid: Ed Motta" in text
-    assert "afrobeat & highlife" in text
     assert len(lines) <= 22
 
 
@@ -80,25 +79,26 @@ def test_prompt_size_does_not_grow_with_history():
 
 def test_prompt_variants():
     context = Context.from_store(seeded_store())
-    spread_prompt = candidates_prompt(context, n=6, dig=2)
+    spread_prompt = candidates_prompt(context, n=6)
     assert "2 labelled 'near'" in spread_prompt
-    assert "Go deep" in spread_prompt
+    assert "go deep" in spread_prompt                                # obscurity rides on the reach, not a knob
     assert "spotify" not in spread_prompt.split("For each:")[1]       # the brain is never asked for ids
-    far_prompt = candidates_prompt(context, n=4, dig=1, reach="far")
+    far_prompt = candidates_prompt(context, n=4, reach="far")
     assert "Propose 4 real songs, each in a DIFFERENT direction, all labelled 'far'" in far_prompt
     assert "labelled 'near'" not in far_prompt
-    directed_prompt = candidates_prompt(context, n=4, dig=0, direction_hint="brazilian soul", rejects=["A — B"])
-    leaning_prompt = candidates_prompt(context, n=6, dig=1, lean="  melancholic,\n  Portuguese ")
+    assert "did not land" not in far_prompt
+    misses = [{"artist": "Konono No. 1", "title": "Mama Lissanga", "band": "tap"}]
+    corrected_prompt = candidates_prompt(context, n=6, reach="far", misses=misses)
+    assert "Konono No. 1 — Mama Lissanga measured as a small step" in corrected_prompt
+    assert "do not propose them again" in corrected_prompt
+    retry_prompt = candidates_prompt(context, n=4, rejects=["A — B"])
+    assert "rejected (already known" in retry_prompt
+    leaning_prompt = candidates_prompt(context, n=6, lean="  melancholic,\n  Portuguese ")
     assert 'stay inside it: "melancholic, Portuguese"' in leaning_prompt
+    assert "the lean wins" in leaning_prompt
     assert "lean" not in spread_prompt
-    assert 'ONE direction: "brazilian soul"' in directed_prompt
-    assert "rejected (already known" in directed_prompt
-    assert "Go deep" not in directed_prompt
-    required = CANDIDATES_SCHEMA["properties"]["candidates"]["items"]["required"]
-    assert required == ["reach", "direction", "artist", "title", "why"]
 
 
-# ------------------------------------------------------------------ propose + dedup
 class FakeBackend:
     name = "fake"
 
@@ -272,11 +272,11 @@ def test_save_setting_rewrites_one_line_and_keeps_the_rest(tmp_path):
     from spotkick import config
 
     path = tmp_path / "config.toml"
-    path.write_text('# my settings\nllm_backend = "codex"\ndig = 2\n')
+    path.write_text('# my settings\nllm_backend = "codex"\nlean = "jazz"\n')
     config.save_setting("llm_backend", "claude", path)
-    assert path.read_text() == '# my settings\nllm_backend = "claude"\ndig = 2\n'
+    assert path.read_text() == '# my settings\nllm_backend = "claude"\nlean = "jazz"\n'
     assert config.load(path).llm_backend == "claude"
-    assert config.load(path).dig == 2
+    assert config.load(path).lean == "jazz"
 
     config.save_setting("claude_model", "haiku", path)
     assert config.load(path).claude_model == "haiku"

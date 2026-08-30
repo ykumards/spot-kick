@@ -44,9 +44,9 @@ TOLERANCES = {
     "embedding_max_cosine_distance": 1e-4,
     "bands_state_max_abs": 1e-6,        # the EWMA state vector, float32 either way
     "bands_distance_max_abs": 1e-6,     # one cosine distance
-    "bands_scale_max_abs": 1e-6,        # median and 95th percentile of pairwise distances
+    "bands_scale_max_abs": 1e-6,        # median and 95th percentile of distances from the state
     "bands_rel_max_abs": 1e-5,          # (d − step) / (far − step): a ~0.1 denominator amplifies the above
-    "bands_exact_max_abs": 1e-9,        # target_for, acceptance, followed: plain arithmetic on given numbers
+    "bands_exact_max_abs": 1e-9,        # target_for, followed: plain arithmetic on given numbers
 }
 
 
@@ -183,13 +183,12 @@ def bands_cases() -> dict:
         "typical_step": typical_step,
         "far": far,
         "measured": [
-            {"index": item.index, "distance": item.distance, "rel": item.rel, "band": item.band,
-             "acceptance": item.acceptance}
+            {"index": item.index, "distance": item.distance, "rel": item.rel, "band": item.band}
             for item in measured
         ],
         "magnitudes": [
             {"magnitude": magnitude, "strength": bands.strength_for(magnitude),
-             "target_rel": bands.target_for(magnitude), "acceptance": bands.acceptance(bands.target_for(magnitude))}
+             "target_rel": bands.target_for(magnitude)}
             for magnitude in magnitudes
         ],
         "followed": {
@@ -231,14 +230,11 @@ def prompt_fixtures(out_dir: Path) -> list[dict]:
         "rejected": context.rejected,
         "directions": context.directions,
         "kicked_artists": context.kicked_artists,
-        "taste": context.taste,
     }, indent=2))
     variants = [
-        ("plain", {"n": 6, "dig": 1}),
-        ("deep", {"n": 6, "dig": 2}),
-        ("follow", {"n": 4, "dig": 1, "direction_hint": "spiritual jazz, modal drift"}),
-        ("far", {"n": 4, "dig": 1, "reach": "far"}),
-        ("lean", {"n": 6, "dig": 1, "lean": "melancholic, Portuguese"}),
+        ("plain", {"n": 6}),
+        ("far", {"n": 4, "reach": "far"}),
+        ("lean", {"n": 6, "lean": "melancholic, Portuguese"}),
     ]
     for name, kwargs in variants:
         path = out_dir / f"prompt_{name}.txt"
