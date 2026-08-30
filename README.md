@@ -4,45 +4,14 @@ A tiny macOS experiment for nudging Spotify's recommendations.
 
 Wind up the menubar leg and let go. Spot Kick chooses one song at roughly the distance you asked for, plays it, then gets out of the way. Spotify chooses what follows. The panel watches the next songs and reports whether Spotify returned to your old neighborhood, bent toward the kick, or followed it.
 
-This is deliberately the smallest useful version. It is not a playlist generator, a Spotify replacement, or a claim about Spotify's internals.
+It is not a playlist generator, a Spotify replacement, or a claim about Spotify's internals. It is a way to make one
+measured intervention and watch what Spotify does next.
 
-## The v0 loop
+<p align="center">
+  <img src="docs/assets/spot-kick-demo.webp" width="376" alt="Spot Kick showing the wind-up leg, warmed tap, kick and boot bench, and Spotify controls">
+</p>
 
-```text
-recent Spotify plays
-        ↓
-listener state and a personal distance ruler
-        ↓
-the brain scouts names into a warm bench
-        ↓
-Spotify verifies each identity; iTunes supplies a preview
-        ↓
-CLAP embeds the previews and measures tap / kick / boot distance
-        ↓
-your wind-up sends one bench song on
-        ↓
-Spotify continues; Spot Kick measures the next two songs
-```
-
-The language model only proposes names and a direction. It does not decide which candidate is near or far. Spot
-Kick resolves the names to verified Spotify tracks, embeds 30-second audio previews with CLAP, and makes the final
-choice in measured audio space. The bench is filled and topped up in the background, so releasing the leg normally
-does not wait for the brain.
-
-The listener state is an exponentially weighted average of recent song embeddings. Distance is calibrated against the listener's own recent movement, so a tap, kick, and boot are relative to this listening session rather than universal genre labels.
-
-After the kick, Spot Kick projects the changing listener state onto the kick direction:
-
-```text
-followed = ((current − before) · (kick − before)) / |kick − before|²
-```
-
-Near zero means Spotify returned; near one means it continued in the kick's direction. The label waits for two
-continuation songs before settling on returned, bent, or followed. If you chose a song yourself in Spotify, use the
-kick card's **reset** button: Spot Kick cannot distinguish a manual choice from autoplay, so the explicit reset marks
-the experiment cancelled instead of treating that song as evidence.
-
-## Run it
+## Getting started
 
 Requirements:
 
@@ -89,20 +58,6 @@ Requirements:
 4. **Open the gear in Spot Kick.** Choose the brain you installed, paste the Spotify Client ID and Client Secret,
    and save. The app checks the credentials before keeping them.
 
-### Use it
-
-1. Play music in the Spotify desktop app. Spot Kick quietly learns your recent listening and warms the tap, kick,
-   and boot bench in the background.
-2. Optionally set a **Lean** to constrain the candidates, or turn on **Mini-Me** to rerank nearby candidates using
-   what it has learned from your listening.
-3. Choose tap, kick, or boot, wind up the leg, and release. You can also open the bench and send a named song
-   directly.
-4. Let Spotify play the next two songs. Spot Kick measures them and settles on returned, bent, or followed.
-5. If you manually change the song in Spotify, press **reset** beside **Kicked**. That cancels the experiment so the
-   unrelated song is not counted as Spotify following the kick.
-6. Open **Stats** to inspect your ruler, bench coverage, step history, outcomes, and whether distance, Mini-Me, or a
-   direct bench click selected each kick.
-
 To update an installed copy:
 
 ```sh
@@ -119,6 +74,61 @@ git clone https://github.com/ykumards/spot-kick && cd spot-kick
 uv venv .venv && uv pip install -e ".[dev]"
 .venv/bin/spotkick
 ```
+
+## Using Spot Kick
+
+1. Play music in the Spotify desktop app. Spot Kick learns your recent listening and warms the tap, kick, and boot
+   bench in the background.
+2. Optionally set a **Lean** to constrain the candidates, or turn on **Mini-Me** to rerank nearby candidates using
+   what it has learned from your listening.
+3. Choose tap, kick, or boot, wind up the leg, and release. You can also open the bench and send a named song
+   directly.
+4. Let Spotify play the next two songs. Spot Kick measures them and settles on returned, bent, or followed.
+5. If you manually change the song in Spotify, press **reset** beside **Kicked** so the unrelated song is not counted
+   as Spotify following the kick.
+6. Open **Stats** to inspect your ruler, bench coverage, step history, outcomes, and how each kick was selected.
+
+### Aiming the kick
+
+**Strength** — tap, kick, or boot — controls how far the song should land from your current listening, measured on
+your own scale. A harder kick also asks the brain to search farther afield.
+
+**Lean** narrows the search: choose up to ten genres and moods, or add words such as a language, era, or instrument.
+Every candidate stays inside that Lean at every strength. Changing it clears the current bench and starts warming a
+new one.
+
+### The bench
+
+The bench holds songs that have already been found, verified, embedded, and measured, so a kick normally plays
+immediately. The main screen shows what would play for each strength and how many alternatives are waiting. Open the
+bench to see every candidate on your ruler or to send a specific song directly.
+
+Resolved candidates and their embeddings stay in the local library across restarts. Missing distance bands are
+scouted again in the background, and a Lean only reuses candidates found under that same Lean.
+
+### Mini-Me
+
+Mini-Me learns a keep score from your local listening history: finishing a song is positive evidence, leaving very
+early is negative evidence, and loving a song counts more strongly. Plays left in the middle are ignored. It needs
+about twenty labelled plays, including both positive and negative examples, before it starts making choices.
+
+Mini-Me never changes the intended distance. It only chooses which of the candidates near your target you are most
+likely to keep. Until it has enough data—or while its toggle is off—the nearest candidate plays. The displayed
+percentage is the model's score, not a calibrated guarantee.
+
+Every kick records whether distance, Mini-Me, or a direct bench click made the selection. It also records the nearest
+distance alternative and Mini-Me's score, so the selection can be audited later.
+
+### Results, reset, and Stats
+
+After a kick, the card follows Spotify's next two plays and then settles on returned, bent, or followed. If you
+intervene in Spotify yourself, **reset** cancels the measurement, records that cancellation, and prevents later songs
+from changing it.
+
+Stats shows play, track, kick, and verdict counts; your current ruler and bench coverage; recent song-to-song steps;
+requested and landed distances; and whether Mini-Me actually changed a selection.
+
+## Configuration
 
 ### Spotify credentials
 
@@ -151,61 +161,36 @@ llm_reasoning = "low"
 claude_model  = "sonnet"            # Claude Code's model
 ```
 
-### The bench
+## How it works
 
-While you listen, the app asks the brain for candidates, fetches their previews, embeds and measures them — before
-you kick. That is the bench, shown on the main screen per strength: the song that would play right now at a tap,
-a kick, and a boot, plus how many alternatives are waiting. Open it for the whole list with each pick's place on
-your ruler, or click a named pick to send that exact song on. Missing distance bands are scouted again in the
-background. Resolved picks and their embeddings stay in the local library across restarts; a Lean only reuses picks
-that were scouted under the same Lean.
+The brain proposes song names and a direction while you listen. Spotify verifies each identity, iTunes supplies a
+30-second preview, and CLAP embeds the audio. The brain never sees those vectors and does not decide whether a song
+is near or far: Spot Kick measures and selects candidates in audio space.
 
-### Mini-Me (under the hood)
+Your listener state is an exponentially weighted average of recent song embeddings. The distance ruler is calibrated
+against your own recent movement, so tap, kick, and boot are relative to your listening rather than universal genre
+labels.
 
-Mini-Me's first job is a model of *you*: a keep score from a lightweight logistic regression over CLAP embeddings.
-Its labels come from your own log — how much of each song you let play (kept to the end is a yes, kicked away at
-2% is a firm no, left in the middle says nothing), and your loves. It refits in milliseconds whenever the log grows,
-and it needs about twenty labelled plays with both kinds before it has an opinion. It never overrides the ruler:
-a kick still lands where you aimed; among the bench picks that land there, Mini-Me chooses the one you are most
-likely to keep, and the card says how likely. Below that threshold the nearest pick to the target plays, as
-before. Every kick records whether it was chosen by distance, Mini-Me, or a bench click, plus the nearest-distance
-alternative and Mini-Me's score at that moment, so later analysis can separate and reproduce the selection policy.
-The percentage is the model's score, not a calibrated guarantee.
+After the kicked song, Spot Kick projects the changing listener state onto the kick direction:
 
-Mini-Me keeps learning whether its toggle is on or off. The toggle only decides whether it gets a say in selection;
-while it is still learning, kicks automatically use the nearest measured pick.
+```text
+followed = ((current − before) · (kick − before)) / |kick − before|²
+```
 
-### Aiming the kick
+Near zero means Spotify returned to the earlier neighborhood; near one means it continued toward the kick. The
+verdict waits for two continuation songs before settling.
 
-One knob on the leg, one on the side. **Strength** — tap, kick, boot — is how far the pick lands in sound, on your
-own scale, and a harder kick also digs deeper: a tap may be a song you half know, a boot is one you would never be
-recommended. **Lean**, the button next to the leg, narrows the search space: tick up to ten genres and moods, add
-your own words (a language, an era, an instrument), and every pick stays inside them at any strength — the lean
-wins over everything else the brain is told. It is stored as one comma-joined line, `lean = "jazz, calm,
-Portuguese"`; changing it drops the current picks and rebuilds them in the background.
+## Command line
 
-### Watching and resetting
-
-After a kick, the card shows the kicked song, Spotify's next two plays, each one's position along the kick direction,
-and the final returned / bent / followed verdict. The result freezes after the second continuation song. If you
-intervene in Spotify yourself, **reset** cancels that kick, records a user cancellation in the event log, and stops
-later songs from changing it.
-
-The Stats screen shows play, track, kick, and verdict counts; the current personal ruler and bench coverage; a chart
-of recent song-to-song steps; and recent kicks with their requested and landed distances. It also says whether
-Mini-Me changed a selection, agreed with the nearest pick, or whether you selected directly from the bench.
-
-Launching `spotkick` from a terminal puts it in the menu bar and hands the prompt back; its output goes to
-`~/.spotkick/app.log`. `spotkick --foreground` keeps it attached to the terminal for debugging.
-
-Useful terminal commands:
+Launching `spotkick` puts the app in the menu bar and returns the terminal prompt. Logs go to
+`~/.spotkick/app.log`; `spotkick --foreground` keeps the process attached for debugging.
 
 ```sh
-.venv/bin/spotkick kick boot  # kick once, then watch two Spotify songs
-.venv/bin/spotkick watch      # observe plays and keep picks warm
-.venv/bin/spotkick status     # inspect the local history
-.venv/bin/spotkick prompt     # see exactly what the brain would receive
-.venv/bin/spotkick forget     # delete the local database
+spotkick kick boot  # kick once, then watch two Spotify songs
+spotkick watch      # observe plays and keep picks warm
+spotkick status     # inspect the local history
+spotkick prompt     # see exactly what the brain would receive
+spotkick forget     # delete the local database
 ```
 
 ## Privacy
@@ -224,8 +209,6 @@ Spot Kick is not affiliated with Spotify.
 RUFF_CACHE_DIR=/tmp/spotkick-ruff-cache .venv/bin/ruff check .
 .venv/bin/basedpyright
 ```
-
-The active scope and definition of done live in [PLAN.md](PLAN.md).
 
 ## License
 
