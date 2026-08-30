@@ -18,9 +18,9 @@ class Config:
     llm_model: str = "gpt-5.6-terra"    # Codex's model
     llm_reasoning: str = "low"          # Codex's reasoning effort
     claude_model: str = "sonnet"        # Claude Code's model, when llm_backend is claude
-    spotify_client_id: str = ""         # your own Spotify app, from developer.spotify.com: names → track ids
+    spotify_client_id: str = ""         # the developer's Spotify app: resolves names to track ids
                                         # (its secret lives in the Keychain, or SPOTKICK_SPOTIFY_CLIENT_SECRET)
-    lean: str = ""                      # a mood/language/anything the brain keeps every pick inside; empty = none
+    lean: str = ""                      # free text every pick stays inside (a mood, a language, an era); empty = none
     n_candidates: int = 6
     alpha: float = 0.7                  # listener-state EWMA
 

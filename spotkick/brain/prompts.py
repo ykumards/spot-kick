@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# One knob: how hard the kick is. A harder kick is farther in sound *and* deeper below the surface, because that is
-# what "farther" means to a listener: a small step may be a song they half know; a boot is one they would never meet.
+# The reach text per strength. A harder kick is both farther in sound and less well known, since that is what
+# "farther" means to a listener.
 REACH_TEXT = {
     "near": "a small step: same mood, one notch more adventurous; a known song is fine if it fits",
     "adjacent": (
@@ -44,7 +44,7 @@ CANDIDATES_SCHEMA = {
     "additionalProperties": False,
 }
 
-# How many of each list the prompt carries, so its size is bounded regardless of history length.
+# Caps on each list in the prompt, so its size does not depend on the history length.
 RECENT_PLAYS = 12
 TOP_ARTISTS = 10
 TOP_RECENT_DAYS = 30

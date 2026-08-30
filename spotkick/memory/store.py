@@ -66,8 +66,7 @@ CREATE TABLE IF NOT EXISTS candidates (
 CREATE INDEX IF NOT EXISTS candidates_set ON candidates(set_id);
 """
 
-# Columns and tables earlier versions wrote that nothing reads any more: dropped on open, so an old database
-# ends up with the schema above. (Track ids, keys and every measurement survive.)
+# Columns and tables written by earlier versions that nothing reads; dropped on open. Rows are kept.
 DROPPED_COLUMNS = {
     "tracks": ("itunes_id", "resolved_how"),
     "events": ("hour", "weekday", "session_id", "position_in_session", "prev_track_id", "pick_p", "pick_score",
@@ -104,8 +103,8 @@ INSERT_CANDIDATE_SQL = (
     "INSERT INTO candidates(t,set_id,for_track_id,track_id,reach,direction,artist,title,why,rejected_reason,lean)"
     " VALUES (?,?,?,?,?,?,?,?,?,?,?)"
 )
-# The library: every candidate ever resolved and measured, whose track has never been played or kicked since,
-# newest first. Their embeddings are in the store, so a pool can be refilled from here without a brain call.
+# The library: every resolved candidate whose track has not been played or kicked since, newest first. Their
+# embeddings are stored, so a pool can be refilled from here without a brain call.
 LIBRARY_ROWS_SQL = (
     "SELECT * FROM candidates WHERE lean=? AND track_id IS NOT NULL AND rejected_reason IS NULL AND chosen=0"
     f" AND track_id NOT IN (SELECT track_id FROM events WHERE kind IN {SEEN_KINDS_SQL})"
@@ -122,7 +121,7 @@ PLAY_SEQUENCE_SQL = (
     f" JOIN tracks t ON t.id=e.track_id WHERE e.kind IN {PLAY_KINDS_SQL} ORDER BY e.t DESC, e.id DESC LIMIT ?)"
     " ORDER BY t ASC, id ASC"
 )
-# Loved now: the track's latest love/unlove event is a love. Append-only, so an unlove is a row, not a deletion.
+# A track is loved when its latest love/unlove event is a love; events are append-only.
 LOVED_SQL = (
     "SELECT t.artist, t.title FROM events e JOIN tracks t ON t.id=e.track_id"
     " WHERE e.kind='love'"
@@ -243,7 +242,7 @@ class Store:
         with self._lock:
             self.db.close()
 
-    # ---- every statement goes through one of these
+    # ---- statement helpers; every query runs under the lock
     def _run(self, sql: str, args: Sequence[object] = ()) -> None:
         with self._lock:
             self.db.execute(sql, args)
@@ -298,7 +297,7 @@ class Store:
                 "preview_url": preview_url,
                 "duration_s": duration_s,
             }
-            # Only fill columns that are still empty: the first value we learned wins.
+            # Only empty columns are filled: the first value recorded is kept.
             updates = {column: value for column, value in fresh.items() if value is not None and row[column] is None}
             if updates:
                 self._run(f"UPDATE tracks SET {assignment_list(updates)} WHERE id=?", (*updates.values(), row["id"]))
@@ -475,7 +474,7 @@ class Store:
                 break
         return library
 
-    # ------------------------------------------------------ dedup, done here
+    # ------------------------------------------------------------------- dedup
     def seen(self, artist: str, title: str) -> bool:
         """Return True when the track was ever played or kicked."""
         track = self.find_track(artist, title)
@@ -486,7 +485,7 @@ class Store:
             return True
         return self._one("SELECT 1 FROM kicks WHERE track_id=? LIMIT 1", (track.id,)) is not None
 
-    # ---------------------------------------------------- context queries (Brain)
+    # ------------------------------------------------ context queries (prompts)
     def recent(self, n: int = 12) -> list[dict]:
         """Return the last ``n`` plays, most recent first."""
         rows = self._all(RECENT_PLAYS_SQL, (n,))

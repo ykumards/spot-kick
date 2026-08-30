@@ -70,7 +70,7 @@ EDIT_MENU_ITEMS = (
     ("Select All", "selectAll:", "a"),
 )
 BRIDGE_NAME = "api"
-# The arithmetic the panel needs to name a wind-up and count the judging window, so it never re-encodes bands.py.
+# Sent with every status so the panel does not re-encode these values from bands.py.
 RULES = {"strength_ceilings": list(bands.STRENGTH_CEILINGS), "songs_to_judge": bands.SONGS_TO_JUDGE}
 
 
@@ -412,7 +412,7 @@ class LegApp(NSObject):
         popover = NSPopover.alloc().init()
         popover.setContentViewController_(view_controller)
         popover.setContentSize_((PANEL_WIDTH, PANEL_HEIGHT))
-        popover.setBehavior_(NSPopoverBehaviorApplicationDefined)  # we close it ourselves, on a click outside
+        popover.setBehavior_(NSPopoverBehaviorApplicationDefined)  # closed by close_on_outside_click
         return popover
 
     @objc.python_method

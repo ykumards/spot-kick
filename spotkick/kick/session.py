@@ -44,11 +44,11 @@ OFF_TARGET_WARN_REL = 0.5      # best candidate's rel further than this from the
 STEPS_SHOWN = 40               # consecutive-song distances the stats screen plots
 BAND_TOP_UP_N = 4              # candidates asked for when one band of the pool has run dry
 BAND_RETRY_N = 6               # ... and on every retry, with the misses fed back
-# An empty band is asked for again and again, each time telling the brain where its last picks measured. The
-# delays only pace the brain's quota: two immediate corrections, then a minute, then five, then ten between tries.
+# Delay before each retry of an empty band, by the number of misses so far: two immediate corrections, then a
+# minute, five and ten. The delays pace the brain's quota; every retry includes the previous misses.
 BAND_RETRY_DELAYS_S = (0.0, 0.0, 60.0, 300.0, 600.0)
 BAND_MISSES_KEPT = 12          # measured misses remembered per band and fed back to the brain
-LEAN_CAP_TRIES = 2             # misses in a row under a lean before we say the lean itself caps the reach
+LEAN_CAP_TRIES = 2             # consecutive misses under a lean before the band is reported as capped by the lean
 REACH_FOR_BAND = {"tap": "near", "kick": "adjacent", "boot": "far"}
 SKIP_COMPLETION = 0.3          # leaving a song before this fraction of it counts as a skip
 WARM_STATE_RECENT_ROWS = 30    # store rows scanned to rebuild the listener state ...
@@ -77,7 +77,7 @@ class Player(Protocol):
 class PoolItem:
     cand_id: int
     track: Track
-    uri: str                   # the track's Spotify URI; every pool item is playable by construction
+    uri: str                   # every pool item has a Spotify URI
     embedding: np.ndarray
     reach: str
     direction: str
@@ -149,7 +149,7 @@ class KickSession:
         self._band_asked_at: dict[str, float] = {}
         self._band_attempts: dict[str, int] = {}       # top-ups that came back with nothing in the band, in a row
         self._band_misses: dict[str, list[dict]] = {}  # what those top-ups produced and where each measured
-        self._pool_generation = 0     # bumped by invalidate_pool, so a build started under old settings is dropped
+        self._pool_generation = 0     # incremented by invalidate_pool; builds from older generations are discarded
         self._building_reach: str | None = None   # the reach a running top-up asks for; None when idle or a full build
         self._last_uri: str | None = None
         self._last_track: spotify.Track | None = None
@@ -316,7 +316,7 @@ class KickSession:
             return
         now = self.state.vector
         if now is None:
-            return  # nothing has reached the state yet, so there is no movement to measure
+            return  # no state yet, so no movement to measure
         kick.n_since += 1
         kick.followed = bands.followed(kick.pre, kick.kick_vec, now)
         verdict = bands.verdict(kick.followed, kick.n_since)
@@ -338,7 +338,7 @@ class KickSession:
                                             preview_url=preview.preview_url, duration_s=preview.duration_s)
         try:
             return clap.embed_track(self.store, self.embedder, track)
-        except Exception as error:  # noqa: BLE001 — network, afconvert; the song just stays out of the state
+        except Exception as error:  # noqa: BLE001 — network or afconvert failure; the track stays out of the state
             self.log(f"embed failed for {track.label}: {error}")
             return None
 
@@ -378,7 +378,7 @@ class KickSession:
         if self._pool_building() or self.state.vector is None:
             return
         if not self.api.configured:
-            # Without credentials nothing can be resolved, so asking the brain would only spend its quota.
+            # Without credentials nothing can be resolved, so a brain call would be wasted.
             if not self._warned_no_credentials:
                 self.log(NOT_CONFIGURED_MESSAGE)
                 self._warned_no_credentials = True
@@ -652,8 +652,8 @@ class KickSession:
         target = bands.target_for(magnitude)
         measured, best = self.measure_and_choose(items, target)
         if abs(best.rel - target) > OFF_TARGET_WARN_REL:
-            # The pool is topped up band by band in the background; at kick time the nearest measured pick plays
-            # now, and the panel says where it actually landed. Waiting on the brain here cost a minute per kick.
+            # The nearest measured pick plays now and the panel reports where it landed; the pool is topped up in
+            # the background. Waiting for the brain here would cost a minute per kick.
             self.log(f"kick lands off target: best rel {best.rel:.2f} vs {target:.2f} among {len(items)}")
         return self.send_on(pool, items, measured, best, strength=strength, magnitude=magnitude, target=target)
 
@@ -674,7 +674,7 @@ class KickSession:
         if self.state.vector is None:
             raise RuntimeError(NO_STATE_MESSAGE)
         if self.playing_now_or_none() is None:
-            # A Spotify that reports 'stopped' (just launched, or idle) takes `play track` without ever starting.
+            # A Spotify that reports 'stopped' (just launched, or idle) accepts `play track` without starting.
             raise RuntimeError(NOT_PLAYING_MESSAGE)
         if not self.api.configured:
             raise RuntimeError(NOT_CONFIGURED_MESSAGE)
@@ -796,7 +796,7 @@ class KickSession:
         for play in plays:
             vector = embeddings.get(play["track_id"])
             if vector is None or play["track_id"] == previous_track_id:
-                continue  # only plays the judge counted: measurable, and not the same song logged twice in a row
+                continue  # only plays the verdict counted: embedded, and not the same track logged twice in a row
             previous_track_id = play["track_id"]
             along = bands.followed(kick.pre, kick.kick_vec, vector)
             picks.append({"artist": play["artist"], "title": play["title"], "along": along})

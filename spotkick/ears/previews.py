@@ -84,5 +84,5 @@ def lookup(artist: str, title: str, *, country: str = "us", session: HttpClient 
     best = max(results, key=lambda result: rank_key(result, wanted_artist, wanted_title))
     artist_strength, title_strength, _ = rank_key(best, wanted_artist, wanted_title)
     if artist_strength == 0 or title_strength == 0:
-        return None  # a preview for another song would corrupt the ruler
+        return None  # a preview of a different song would be measured as this one
     return to_preview(best)

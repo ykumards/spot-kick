@@ -80,7 +80,7 @@ def test_prompt_variants():
     context = Context.from_store(seeded_store())
     spread_prompt = candidates_prompt(context, n=6)
     assert "2 labelled 'near'" in spread_prompt
-    assert "go deep" in spread_prompt                                # obscurity rides on the reach, not a knob
+    assert "go deep" in spread_prompt                                # obscurity comes from the reach text
     assert "spotify" not in spread_prompt.split("For each:")[1]       # the brain is never asked for ids
     far_prompt = candidates_prompt(context, n=4, reach="far")
     assert "Propose 4 real songs, each in a DIFFERENT direction, all labelled 'far'" in far_prompt

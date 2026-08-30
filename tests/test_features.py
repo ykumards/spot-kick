@@ -6,7 +6,7 @@ PREVIEW_SAMPLES = 30 * features.SR
 
 
 def diagonal_mel_filters() -> np.ndarray:
-    """A (513, 64) filterbank where each mel bin picks exactly one FFT bin, so zero audio gives exactly the floor."""
+    """A (513, 64) filterbank where each mel bin selects one FFT bin, so silence gives exactly the floor."""
     mel_filters = np.zeros((513, features.N_MELS), dtype=np.float32)
     mel_filters[np.arange(features.N_MELS) * 8, np.arange(features.N_MELS)] = 1.0
     return mel_filters

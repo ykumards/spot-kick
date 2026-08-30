@@ -101,7 +101,7 @@ def test_context_queries(store):
         t=now - 50,
     )
     store.add_event("kick", kicked.id, "kick", kick_id=kick_id, t=now - 50)
-    store.add_event("play", kicked.id, "kick", t=now - 49)  # the forced follow-through: not counted
+    store.add_event("play", kicked.id, "kick", t=now - 49)  # the kicked track: not counted
     followed_by = store.upsert_track("Jorge Ben Jor", "Taj Mahal")
     store.add_event("play", followed_by.id, "spotify", t=now - 10)
     assert store.directions() == ["brazilian soul"]
@@ -169,7 +169,7 @@ def test_recent_kicks_and_spotify_play_count(store):
     kick_id = store.add_kick(strength="boot", magnitude=0.9, target_rel=1.3, direction="brazilian soul", why="",
                              track_id=kicked.id, distance=0.5, rel=1.2, band="boot", pre_state=None,
                              kick_vec=None)
-    store.add_event("play", kicked.id, "kick", kick_id=kick_id)          # the forced follow-through
+    store.add_event("play", kicked.id, "kick", kick_id=kick_id)          # the kicked track
     store.add_event("play", other.id, "spotify")
     store.add_event("play", other.id, "spotify")
     store.update_kick(kick_id, followed=0.7, verdict="followed", n_since=2)

@@ -17,7 +17,7 @@ DEFAULT_BINARY = "claude"
 # Structured output is an internal tool call, so a proposal takes two turns.
 PROPOSE_MAX_TURNS = 4
 NO_TOOLS = ""
-# Claude Code thinks by default, and naming six songs made it think for ~11k tokens: two minutes per call against
+# Claude Code thinks by default; for a six-song proposal that costs ~11k tokens and two minutes per call against
 # ten seconds without. The env var is honoured by every CLI version; the setting is the documented switch.
 NO_THINKING_ENV = {"MAX_THINKING_TOKENS": "0"}
 NO_THINKING_SETTINGS = '{"alwaysThinkingEnabled": false}'

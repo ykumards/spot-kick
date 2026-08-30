@@ -34,10 +34,9 @@ from spotkick.memory.store import Store
 OUT_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "parity"
 SAMPLE_RATE = features.SR
 
-# What a port is allowed to differ by. Nothing here can be exact: numpy sums float32 dot products in a different
-# order than Accelerate does, and vDSP's FFT and numpy's are both correct without being bit-identical. The
-# tolerances are set where the difference stops being noise and starts being a bug — several orders of magnitude
-# below anything that could move a band boundary or a verdict.
+# How far a port may differ. Exact equality is not possible: numpy sums float32 dot products in a different order
+# than Accelerate, and vDSP's FFT and numpy's differ in the last bits. The tolerances sit several orders of
+# magnitude below anything that could move a band boundary or a verdict.
 TOLERANCES = {
     "logmel_max_abs_db": 1e-3,          # replaced below by the measured sensitivity when that is larger
     "features_max_abs_db": 1e-3,
@@ -50,9 +49,8 @@ TOLERANCES = {
 }
 
 
-# The test audio, described rather than stored. Every component is exactly reproducible in any language: `sine` and
-# `chirp` are libm arithmetic, and `noise` is the textbook 32-bit linear congruential generator below rather than
-# numpy's PCG64, which a port could not reproduce.
+# The test audio is described, not stored. Every component is reproducible in any language: `sine` and `chirp`
+# are libm arithmetic, and `noise` is a 32-bit linear congruential generator rather than numpy's PCG64.
 LCG_MULTIPLIER = 1_664_525
 LCG_INCREMENT = 1_013_904_223
 LCG_MODULUS = 2**32
@@ -70,7 +68,7 @@ WAVE_SPECS = [
     },
     {
         # The noise floor is deliberate: a bare chirp leaves mel bins near −100 dB, where log10 turns a one-bit
-        # input difference into a tenth of a decibel and the parity tolerance would have to be uselessly loose.
+        # input difference into a tenth of a decibel and the tolerance would have to be too loose to be useful.
         "name": "exact",
         "seconds": 10.0,
         "description": "exactly 10 s, one middle crop",
@@ -218,8 +216,8 @@ def prompt_fixtures(out_dir: Path) -> list[dict]:
 
     written = []
     context = Context.from_store(store)
-    # The context is dumped too: a port should be checked on the prompt it renders, not on whether it reimplemented
-    # the store queries that fed it. Those are the store's own tests.
+    # The context is written too, so a port is checked on the prompt it renders from identical input; the store
+    # queries that produced the context have their own tests.
     (out_dir / "context.json").write_text(json.dumps({
         "recent": [{"artist": play["artist"], "title": play["title"], "source": play["source"], "kind": play["kind"]}
                    for play in context.recent],

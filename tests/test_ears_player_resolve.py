@@ -33,7 +33,7 @@ Handler = Callable[[str, dict | None], FakeResponse]
 
 
 class FakeHTTP:
-    """Satisfies `previews.HttpClient`; every `get` is answered by `handler` and remembered in `calls`."""
+    """A ``previews.HttpClient`` whose every ``get`` is answered by ``handler`` and recorded in ``calls``."""
 
     def __init__(self, handler: Handler):
         self.handler = handler
@@ -140,8 +140,9 @@ def test_parse_now_playing():
 
 
 def test_spotify_is_never_addressed_without_the_running_guard(monkeypatch):
-    """`tell application "Spotify"` launches Spotify, so every command is wrapped in an `is running` check that runs
-    in the same script, and a closed Spotify is a PlayerError rather than a relaunch."""
+    """Every command runs under an ``is running`` check in the same script, so a closed Spotify raises PlayerError
+    rather than being launched.
+    """
     issued_scripts = []
 
     def spotify_is_closed(script: str) -> str:
@@ -187,7 +188,7 @@ def test_play_and_confirm_reads_back(monkeypatch):
 
 
 class FakeSpotifyHttp:
-    """The token endpoint and /v1/search, answering from a canned hit list; remembers what it was asked."""
+    """A fake token endpoint and ``/v1/search`` answering from a fixed hit list; records the requests."""
 
     def __init__(self, hits: list[dict], *, token_status: int = 200, search_status: int = 200):
         self.hits = hits
@@ -299,7 +300,7 @@ def test_credentials_are_kept_in_the_keychain_not_the_config(monkeypatch, tmp_pa
     refused = FakeSpotifyHttp([], token_status=401)
     with pytest.raises(SpotifyAPIError):
         spotify_api.save_credentials("id", "bad", session=refused)
-    assert "secret" not in stored                                      # nothing kept when Spotify says no
+    assert "secret" not in stored                                      # nothing is stored when Spotify refuses
 
     spotify_api.save_credentials("id", "s3cret", session=FakeSpotifyHttp([]))
     assert stored["secret"] == "s3cret"

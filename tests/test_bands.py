@@ -50,7 +50,7 @@ def test_measure_and_choose_by_target():
     assert measured[2].rel < 0
     nearest = bands.choose(measured, target_rel=measured[2].rel)
     assert nearest is not None
-    assert nearest.index == 2                            # the state itself is the nearest thing to "no kick"
+    assert nearest.index == 2                            # the state vector is the zero-distance case
     farthest = bands.choose(measured, target_rel=10.0)
     assert farthest is not None
     assert farthest.index == int(np.argmax([candidate.rel for candidate in measured]))

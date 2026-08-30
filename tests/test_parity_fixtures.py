@@ -1,7 +1,7 @@
-"""The parity fixtures are the contract a port is checked against, so they must keep matching this implementation.
+"""Regression tests against the parity fixtures, the contract a port is checked against.
 
-If one of these fails, either the Python behaviour changed on purpose (re-run
-`scripts/export_parity_fixtures.py` and tell the port) or it changed by accident (fix the code).
+A failure means either the Python behaviour changed on purpose (re-run ``scripts/export_parity_fixtures.py``)
+or by accident (fix the code).
 """
 from __future__ import annotations
 

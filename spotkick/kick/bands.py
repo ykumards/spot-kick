@@ -13,7 +13,7 @@ import numpy as np
 
 STRENGTHS = ("tap", "kick", "boot")
 TARGET_REL = {"tap": 0.25, "kick": 0.75, "boot": 1.3}   # where each strength should land on the listener's scale
-DEFAULT_SCALE = (0.10, 0.40)                            # typical step, far — before we have 3 plays
+DEFAULT_SCALE = (0.10, 0.40)                            # typical step, far — used until SCALE_MIN_PLAYS plays
 MIN_GAP = 0.10                                          # far − step never smaller than this
 
 # strength_for: the wind-up magnitude below which each strength applies, checked in order
@@ -27,8 +27,8 @@ STRENGTH_MAGNITUDE = {"tap": 0.165, "kick": 0.5, "boot": 0.83}
 TARGET_MAGNITUDES = (0.0, *STRENGTH_MAGNITUDE.values(), 1.0)
 TARGET_RELS = (0.0, *TARGET_REL.values(), 1.6)
 
-# band_for: the rel below which each band applies, checked in order. The middle band is the widest: most picks
-# land near the middle of the scale, and a kick aimed at 0.75 should own a fair margin either side of it.
+# band_for: the rel below which each band applies, checked in order. The middle band is the widest because most
+# picks measure near the middle of the scale.
 BAND_CEILINGS = (("tap", 0.35), ("kick", 1.15))
 BAND_ABOVE_CEILINGS = "boot"
 
@@ -36,11 +36,11 @@ BAND_ABOVE_CEILINGS = "boot"
 VERDICT_CEILINGS = (("returned", 0.25), ("bent", 0.6))
 VERDICT_ABOVE_CEILINGS = "followed"
 
-SONGS_TO_JUDGE = 2         # Spotify-chosen songs after a kick that decide its verdict; later ones don't move it
+SONGS_TO_JUDGE = 2         # recommender-chosen songs after a kick that decide its verdict; later ones do not change it
 HISTORY_KEEP = 40          # plays remembered in the state
 SCALE_WINDOW = 20          # plays the distance scale is computed over
 SCALE_MIN_PLAYS = 3        # below this the default scale is used
-DEGENERATE_KICK = 1e-9     # |kick − pre|² at or below this means the kick didn't move anywhere
+DEGENERATE_KICK = 1e-9     # |kick − pre|² at or below this counts as no displacement
 
 
 def normalize(vector: np.ndarray) -> np.ndarray:
@@ -111,7 +111,7 @@ class ListenerState:
         distances = 1.0 - recent @ centre
         step = float(np.quantile(distances, 0.5))
         far = float(np.quantile(distances, 0.95))
-        # a few near-identical plays must not make every song look far
+        # a few near-identical plays must not make every song measure far
         return step, max(far, step + MIN_GAP)
 
     def rel(self, distance: float) -> float:

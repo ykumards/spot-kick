@@ -1,4 +1,4 @@
-"""The whole kick loop with fakes: a fake player, a fake brain, a fake ruler, no network."""
+"""The kick loop end to end with a fake player, brain and embedder; no network."""
 import threading
 import time
 
@@ -23,7 +23,7 @@ def vec(seed: int) -> np.ndarray:
 
 
 def song_vec(number: int) -> np.ndarray:
-    """Every fake song has a deterministic vector."""
+    """Return the deterministic vector of fake song ``number``."""
     if number < HOME_SONGS:
         return bands.normalize(vec(0) + 0.15 * vec(number + 1))
     return vec(number)
@@ -63,7 +63,7 @@ class FakePlayer:
 
 
 class FakeEmbedder(clap.Embedder):
-    """The ruler, without the ONNX model: every fake preview URL maps to its song's vector."""
+    """An embedder without the ONNX model: every fake preview URL maps to its song's vector."""
 
     def embed_url(self, preview_url: str) -> np.ndarray:
         return song_vec(int(preview_url.split("/")[-1]))
@@ -93,13 +93,13 @@ def fake_preview(artist: str, title: str, *, country: str = "us", session=None) 
 
 
 def candidate_set_ids(store: Store) -> list[str]:
-    """Every set the brain was asked for, oldest first."""
+    """Return every candidate set id, oldest first."""
     rows = store._all("SELECT DISTINCT set_id FROM candidates ORDER BY id")
     return [row["set_id"] for row in rows]
 
 
 class FakeSpotifyAPI(SpotifyAPI):
-    """Spotify's search, faked: every "Song N" by "Artist N" exists and has the matching URI."""
+    """A fake Spotify search in which every "Song N" by "Artist N" exists with the matching URI."""
 
     def __init__(self):
         super().__init__("id", "secret")
@@ -127,7 +127,7 @@ def world(monkeypatch):
 
 
 def play_through(player: FakePlayer, listener: session.KickSession, number: int) -> None:
-    """Let the current song finish, then start song `number` (a real listener finishes songs; the fake must too)."""
+    """Let the current song finish, then start song ``number``."""
     if player.current is not None:
         current = song_number(player.current.uri)
         player.set(current, position=player.current.duration_s - 1)
@@ -163,7 +163,7 @@ def test_kick_picks_by_measured_distance_and_judges_the_continuation(world):
     assert out["strength"] == "boot"
     assert out["track"].spotify_uri == player.played[0]
     by_target = sorted(out["candidates"], key=lambda candidate: abs(candidate["rel"] - out["target_rel"]))
-    assert by_target[0]["chosen"]                          # the one nearest the target on the listener's own scale
+    assert by_target[0]["chosen"]                          # the pick nearest the target rel
     kick = store.last_kick()
     assert kick["strength"] == "boot"
     assert kick["band"] == out["band"]
@@ -179,7 +179,7 @@ def test_kick_picks_by_measured_distance_and_judges_the_continuation(world):
     assert len(store.events(kinds=("play",))) == len(plays_before)
     assert listener.active.n_since == 0
 
-    for number in (5, 6):                                  # Spotify drifts back home
+    for number in (5, 6):                                  # the recommender returns to the home cluster
         play_through(player, listener, number)
     assert listener.active.n_since == 2
     snap = listener.snapshot()["kick"]
@@ -272,7 +272,7 @@ def test_pool_build_is_threadsafe_with_observe(world):
 
 
 def test_kick_never_waits_on_the_brain_when_a_pool_exists(world, monkeypatch):
-    """The pool is topped up in the background; a kick plays the nearest measured pick now, even off target."""
+    """A kick plays the nearest measured pick immediately, even off target; the pool is topped up in the background."""
     listener, _store, player, brain = world
     for number in range(4):
         play_through(player, listener, number)
@@ -290,7 +290,7 @@ def test_kick_never_waits_on_the_brain_when_a_pool_exists(world, monkeypatch):
 
 
 def test_prefetch_survives_a_brain_that_is_rate_limited(world, monkeypatch):
-    """A background prefetch has nobody to catch its exceptions; a capped brain must not kill the thread."""
+    """A BrainError during a background prefetch is logged and does not end the thread."""
     listener, _store, player, brain = world
     log_lines: list[str] = []
     listener.log = log_lines.append
@@ -306,9 +306,9 @@ def test_prefetch_survives_a_brain_that_is_rate_limited(world, monkeypatch):
 
 
 def test_an_empty_band_is_topped_up_in_the_background(world):
-    """The fake brain's picks all measure far, so after the first set the tap and kick bands are empty: the next
-    observation asks for a 'near' top-up (one band at a time), merges it, then moves to the next empty band before
-    coming back to correct the first."""
+    """The fake brain's picks all measure far, leaving the tap and kick bands empty after the first set. The next
+    observation requests a 'near' top-up, merges it, then moves to the next empty band before retrying the first.
+    """
     listener, store, player, brain = world
     for number in range(4):
         play_through(player, listener, number)
@@ -354,8 +354,9 @@ def test_a_track_proposed_twice_is_in_the_pool_once(world):
 
 
 def test_kick_refuses_when_spotify_is_not_playing_here(world):
-    """A Spotify that reports 'stopped' (just launched, or idle) accepts `play track` without ever starting, so the
-    kick must say so up front instead of timing out on the confirmation."""
+    """A Spotify that reports 'stopped' accepts ``play track`` without starting, so the kick fails up front rather
+    than timing out on confirmation.
+    """
     listener, _store, player, _brain = world
     for number in range(2):
         play_through(player, listener, number)
@@ -384,7 +385,7 @@ def test_without_credentials_the_brain_is_never_asked(monkeypatch):
 
 
 def test_a_restart_does_not_log_the_playing_song_again(world):
-    """Each relaunch used to re-ingest whatever was playing: three restarts, three plays of one song, step zero."""
+    """A restart does not log the track already playing again; doing so would add a zero-distance play."""
     listener, store, player, brain = world
     play_through(player, listener, 1)
     assert len(store.events(kinds=("play",))) == 1
@@ -457,8 +458,9 @@ def test_a_build_in_flight_when_the_lean_changes_is_thrown_away(world):
 
 
 def test_the_pool_refills_from_the_library_before_asking_the_brain(world):
-    """Every candidate ever resolved is in the store with its embedding; a dropped pool comes back from there, and
-    only the bands the library leaves empty go to the brain."""
+    """A dropped pool is rebuilt from the library of resolved candidates; only the bands the library leaves empty go
+    to the brain.
+    """
     listener, store, player, brain = world
     for number in range(3):
         play_through(player, listener, number)
@@ -509,7 +511,7 @@ def test_the_bench_shows_every_pick_by_band_nearest_target_first(world):
         assert band["state"] in ("ready", "resting", "empty")
         assert (band["state"] == "ready") == bool(band["picks"])
         distances = [pick["distance"] for pick in band["picks"]]
-        assert distances == sorted(distances)                   # nearest first, the ruler's order
+        assert distances == sorted(distances)                   # nearest first
         if band["picks"]:
             target = bands.TARGET_REL[name]
             gaps = [abs(pick["rel"] - target) for pick in band["picks"]]
@@ -518,7 +520,7 @@ def test_the_bench_shows_every_pick_by_band_nearest_target_first(world):
 
 
 def test_an_empty_band_is_retried_with_the_misses_fed_back(world):
-    """The brain keeps naming songs that measure close; the harness keeps asking, telling it where each landed."""
+    """A band whose top-ups keep measuring close is retried, with each miss reported in the next prompt."""
     listener, _store, player, brain = world
     brain.next_ids = iter(range(10, 99))                      # every proposal is a home song: a tap, never a boot
     for number in range(3):
@@ -550,11 +552,11 @@ def test_pointing_at_a_sub_sends_that_one_on(world):
     band, pick = next((band, entry["picks"][-1]) for band, entry in bench.items() if entry["picks"])
     out = listener.kick_pick(pick["cand_id"])
     assert out["track"].artist == pick["artist"] and player.played[-1] == out["track"].spotify_uri
-    assert out["strength"] == band                              # the strength is what the pick measures as
+    assert out["strength"] == band                              # the strength is the band the pick measures into
     assert store.last_kick()["strength"] == band
-    assert all(item.cand_id != pick["cand_id"] for item in listener.pool.items)   # off the bench, on the pitch
+    assert all(item.cand_id != pick["cand_id"] for item in listener.pool.items)   # removed from the pool once played
     with pytest.raises(RuntimeError):
-        listener.kick_pick(pick["cand_id"])                     # cannot be sent on twice
+        listener.kick_pick(pick["cand_id"])                     # cannot be kicked twice
 
 
 def test_step_series_is_the_distance_between_consecutive_plays(world):
@@ -570,14 +572,15 @@ def test_step_series_is_the_distance_between_consecutive_plays(world):
     listener.kick(0.5)
     assert listener.step_series()[-1]["source"] == "kick"
     steps_after_kick = len(listener.step_series())
-    listener.kick(0.5)                                         # the kicked song is skipped away from: not a step
+    listener.kick(0.5)                                         # the kicked track is skipped: not a step
     assert listener.step_series()[-1]["source"] == "kick"
     assert len(listener.step_series()) == steps_after_kick + 1
 
 
 def test_kicked_songs_move_the_state_but_not_the_ruler(world):
-    """Sixteen of twenty recent plays being kicks made a 'typical step' the size of a kick, so nothing could ever
-    measure far. The scale is Spotify's spread; the kicks are the intervention."""
+    """Kicked tracks move the state but do not enter the scale history; otherwise a run of kicks would make the
+    typical step the size of a kick and nothing could measure far.
+    """
     listener, store, player, _brain = world
     for number in range(3):
         play_through(player, listener, number)
@@ -587,7 +590,7 @@ def test_kicked_songs_move_the_state_but_not_the_ruler(world):
     scale_before = listener.state.scale()
     listener.kick(0.9)                                         # a far song plays
     assert not np.allclose(listener.state.vector, before)      # the state moved
-    assert len(listener.state.history) == 3                    # the ruler did not learn from it
+    assert len(listener.state.history) == 3                    # the scale did not change
     assert listener.state.scale() == scale_before
     again = new_session(Config(), store, _brain, player)       # and a restart rebuilds it the same way
     assert len(again.state.history) == 3
