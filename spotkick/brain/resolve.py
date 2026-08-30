@@ -1,75 +1,62 @@
-"""(artist, title) → a Spotify track URI we can trust, without Spotify credentials.
+"""(artist, title) → a Spotify track URI we can trust.
 
-1. The Brain names a URI from memory (fast, sometimes hallucinated).
-2. Validate with Spotify's public oEmbed endpoint: a real id returns the track's title, a fake one 404s.
-   The title must also resemble what we asked for.
-3. If that fails, a `searcher(artist, title) -> uri | None` (an LLM with web search, or the Spotify Web API)
-   gets one try, validated the same way.
-4. The player reads back the current track after the play; that check lives in `player.spotify.play_and_confirm`.
+The brain names songs; Spotify's search names ids. The first hit whose artist and title resemble what was asked
+for wins; a hit for another song would put the wrong audio under the ruler, so no match means no track.
 """
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 
-import requests
+from ..player.spotify_api import SpotifyAPI, SpotifyAPIError
 
-OEMBED = "https://open.spotify.com/oembed"
-URI_RE = re.compile(r"spotify:track:([A-Za-z0-9]{22})")
+NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+HEAD_WORDS = 3
 
-Searcher = Callable[[str, str], str | None]
-
-
-def _norm(x: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", x.lower()).strip()
+Logger = Callable[[str], None]
 
 
-def titles_match(want: str, got: str) -> bool:
-    want, got = _norm(want), _norm(got)
-    if not want or not got:
+def ignore_log(message: str) -> None:
+    return None
+
+
+def normalize(name: str) -> str:
+    """Lower-case ASCII words: accents dropped, so Spotify's 'Nètsanèt' matches the brain's 'Netsanet'."""
+    decomposed = unicodedata.normalize("NFKD", name)
+    ascii_only = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return NON_ALNUM_RE.sub(" ", ascii_only.lower()).strip()
+
+
+def names_match(want: str, got: str) -> bool:
+    """Loose containment either way, or the first few words of what we wanted appear in what Spotify reports."""
+    wanted = normalize(want)
+    reported = normalize(got)
+    if not wanted or not reported:
         return False
-    head = " ".join(want.split(" ")[:3])
-    return want in got or got in want or head in got
-
-
-def oembed_title(uri: str, *, session=None) -> str | None:
-    """Title Spotify reports for this id, or None if the id doesn't exist."""
-    m = URI_RE.search(uri or "")
-    if not m:
-        return None
-    http = session or requests
-    r = http.get(OEMBED, params={"url": f"https://open.spotify.com/track/{m.group(1)}"}, timeout=10)
-    if r.status_code != 200:
-        return None
-    return r.json().get("title", "") or None
-
-
-def validate(uri: str | None, title: str, *, session=None) -> bool:
-    got = oembed_title(uri or "", session=session)
-    return got is not None and titles_match(title, got)
+    wanted_head = " ".join(wanted.split(" ")[:HEAD_WORDS])
+    return wanted in reported or reported in wanted or wanted_head in reported
 
 
 @dataclass(frozen=True)
 class Resolved:
     uri: str
-    how: str          # memory | search
-    oembed_title: str
+    artist: str   # as Spotify names them
+    title: str
 
 
-def resolve(artist: str, title: str, candidate: str | None = None, *, searcher: Searcher | None = None,
-            session=None, log=lambda m: None) -> Resolved | None:
-    if candidate:
-        got = oembed_title(candidate, session=session)
-        if got and titles_match(title, got):
-            return Resolved(URI_RE.search(candidate).group(0), "memory", got)
-        log(f"resolve: '{candidate}' is not {artist} — {title} (oEmbed: {got!r}); searching")
-    if searcher is None:
+def resolve(artist: str, title: str, api: SpotifyAPI, *, log: Logger = ignore_log) -> Resolved | None:
+    """Spotify's first hit that is actually this song, or None. Spotify being unreachable is logged and counts as
+    no track — the candidate is skipped, the kick goes on."""
+    try:
+        hits = api.search_tracks(artist, title)
+    except SpotifyAPIError as error:
+        log(f"resolve: {error}")
         return None
-    uri = searcher(artist, title)
-    if uri:
-        got = oembed_title(uri, session=session)
-        if got and titles_match(title, got):
-            return Resolved(URI_RE.search(uri).group(0), "search", got)
-        log(f"resolve: search gave '{uri}' (oEmbed: {got!r}), not validated")
+    for hit in hits:
+        if names_match(artist, hit.artist) and names_match(title, hit.title):
+            return Resolved(hit.uri, hit.artist, hit.title)
+    if hits:
+        log(f"resolve: no hit for {artist} — {title} is that song (first: {hits[0].artist} — {hits[0].title})")
     return None

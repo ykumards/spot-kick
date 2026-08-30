@@ -1,38 +1,78 @@
 """One listener, one Spotify, one kick at a time.
 
     observe()          poll the player; ingest what's playing into the store and the state; attribute it to the
-                       active kick and update its verdict; keep the candidate pool warm; play follow-through songs
+                       active kick and update its verdict; keep the candidate pool warm
     kick(magnitude)    choose the prefetched candidate whose *measured* distance is nearest the wind-up, play it,
-                       confirm the player has it, log the kick, start the follow-through for kick/boot
+                       confirm the player has it, and log the kick
 
 The Brain is only ever asked for names (brain.propose). Resolving, embedding, measuring, choosing, playing, and
 judging are all done here, in the ruler's space, and every step lands in the store.
+
+Threading: observe() runs on the caller's thread; build_pool() usually runs on a daemon thread started by
+maybe_prefetch(). `self.pool` is only ever swapped or trimmed under `_pool_lock`; everything else is single-threaded.
 """
 from __future__ import annotations
 
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
-from ..brain import propose as PR
-from ..brain import resolve as RS
+from ..brain import propose, resolve
+from ..brain.llm import BrainError
 from ..ears import clap, previews
+from ..mind.store import Store, Track
 from ..player import spotify
-from . import bands as B
+from ..player.spotify_api import NOT_CONFIGURED_MESSAGE, SpotifyAPI
+from . import bands
 
-POOL_MAX_AGE_S = 60 * 60     # a pool built an hour ago is re-measured, not discarded
-OFF_TARGET_REL = 0.5         # if the best candidate's rel is further than this from the target, rebuild before kicking
-FOLLOW_END_S = 4.0           # play the next forced song when this much of the current one is left
+if TYPE_CHECKING:
+    import requests
+
+    from ..brain.llm import Backend
+    from ..config import Config
+
+LIBRARY_SET_ID = "library"     # the set id of a pool assembled from stored candidates rather than one brain call
+ACTIVE_KICK_MAX_AGE_S = 60 * 60  # a kick older than this is no longer being judged after a restart
+POOL_OFF_TRACK_MIN_AGE_S = 120.0  # a pool built for another song is only replaced once it is this old
+OFF_TARGET_WARN_REL = 0.5      # best candidate's rel further than this from the target is logged, not waited on
+STEPS_SHOWN = 40               # consecutive-song distances the stats screen plots
+BAND_TOP_UP_N = 4              # candidates asked for when one band of the pool has run dry
+BAND_COOLDOWN_S = 10 * 60      # a band that stayed empty after a top-up is not asked for again before this
+REACH_FOR_BAND = {"tap": "near", "kick": "adjacent", "boot": "far"}
+SKIP_COMPLETION = 0.3          # leaving a song before this fraction of it counts as a skip
+WARM_STATE_RECENT_ROWS = 30    # store rows scanned to rebuild the listener state ...
+WARM_STATE_PLAYS = 20          # ... and how many plays of those are replayed into it
+MATERIALIZE_WORKERS = 6        # candidates resolved/embedded in parallel
+POOL_WAIT_POLL_S = 0.5
+SET_ID_LENGTH = 12
+
+NO_STATE_MESSAGE = "nothing has played yet; play a song first so there is somewhere to kick from"
+NO_CANDIDATES_MESSAGE = "no playable candidates; the brain or Spotify's search came up empty"
+NOT_PLAYING_MESSAGE = ("Spotify reports nothing playing on this Mac; press play there first (right after Spotify "
+                       "launches it ignores play requests for a while)")
+
+Logger = Callable[[str], None]
+
+
+class Player(Protocol):
+    """What the session needs from a player: the `spotify` module satisfies this, and so does a test fake."""
+
+    def now_playing(self) -> spotify.Track | None: ...
+
+    def play_and_confirm(self, uri: str, *, timeout_s: float = ...) -> spotify.Track: ...
 
 
 @dataclass
 class PoolItem:
     cand_id: int
-    track: object              # store.Track, with spotify_uri
+    track: Track
+    uri: str                   # the track's Spotify URI; every pool item is playable by construction
     embedding: np.ndarray
     reach: str
     direction: str
@@ -54,317 +94,604 @@ class ActiveKick:
     kick_vec: np.ndarray
     direction: str
     strength: str
-    dose: int
     track_uri: str
-    forced_uris: list[str] = field(default_factory=list)     # follow-through queue, in order
-    forced_seen: set[str] = field(default_factory=set)        # every uri we forced, incl. the kick track
     n_since: int = 0
     followed: float = 0.0
 
 
+def without_repeated_tracks(items: list[PoolItem]) -> list[PoolItem]:
+    """One pool item per track: the same song can be proposed in two sets (a build and a later top-up), and the
+    brain is only told about songs already *played*, not ones already in the pool."""
+    seen_tracks: set[int] = set()
+    unique = []
+    for item in items:
+        if item.track.id in seen_tracks:
+            continue
+        seen_tracks.add(item.track.id)
+        unique.append(item)
+    return unique
+
+
 class KickSession:
-    def __init__(self, cfg, store, backend, embedder: clap.Embedder | None = None, *, player=spotify, searcher=None,
-                 log=print, http=None):
-        self.cfg, self.store, self.backend, self.player = cfg, store, backend, player
+    def __init__(
+        self,
+        cfg: Config,
+        store: Store,
+        backend: Backend,
+        embedder: clap.Embedder | None = None,
+        *,
+        player: Player = spotify,
+        api: SpotifyAPI | None = None,
+        log: Logger = print,
+        http: requests.Session | None = None,
+    ):
+        self.cfg = cfg
+        self.store = store
+        self.backend = backend
+        self.player = player
         self.embedder = embedder or clap.Embedder()
-        self.searcher = searcher or getattr(backend, "search_uri", None)
-        self.log, self.http = log, http
-        self.state = B.ListenerState(alpha=cfg.alpha)
+        self.api = api or SpotifyAPI.from_config(cfg)
+        self.log = log
+        self.http = http
+        self._warned_no_credentials = False
+        self.state = bands.ListenerState(alpha=cfg.alpha)
         self.pool: Pool | None = None
         self.active: ActiveKick | None = None
         self._pool_lock = threading.Lock()
         self._pool_thread: threading.Thread | None = None
-        self._follow_thread: threading.Thread | None = None
+        self._band_asked_at: dict[str, float] = {}
+        self._pool_generation = 0     # bumped by invalidate_pool, so a build started under old settings is dropped
         self._last_uri: str | None = None
-        self._last_track = None
+        self._last_track: spotify.Track | None = None
         self._max_pos = 0.0
-        self._warm_state()
-        self._restore_active()
-        self._restore_pool()
+        self.warm_state()
+        self.skip_already_logged_song()
+        self.restore_active_kick()
+        self.restore_pool()
 
     # ------------------------------------------------------------------ state
-    def _warm_state(self) -> None:
+    def warm_state(self) -> None:
         """Rebuild the listener state from the last plays in the store, so a restart doesn't start from nothing."""
-        rows = [r for r in self.store.recent(30) if r["kind"] == "play"][:20]
-        ids = [self.store.find_track(r["artist"], r["title"]).id for r in rows]
-        vecs = self.store.embeddings(ids)
-        for tid in reversed(ids):
-            if tid in vecs:
-                self.state.update(vecs[tid])
+        recent = self.store.recent(WARM_STATE_RECENT_ROWS)
+        plays = [row for row in recent if row["kind"] == "play"][:WARM_STATE_PLAYS]
+        replay: list[tuple[int, bool]] = []
+        for row in plays:
+            track = self.store.find_track(row["artist"], row["title"])
+            if track is not None:
+                replay.append((track.id, row["source"] != "kick"))
+        embeddings = self.store.embeddings([track_id for track_id, _ in replay])
+        for track_id, spotify_chose_it in reversed(replay):
+            if track_id in embeddings:
+                self.state.update(embeddings[track_id], counts_for_scale=spotify_chose_it)
 
-    def _restore_active(self, max_age_s: float = 60 * 60) -> None:
-        """A kick from the last hour is still being judged, even across a restart (its follow-through queue is not)."""
-        k = self.store.last_kick()
-        if not k or time.time() - k["t"] > max_age_s or k["pre_state"] is None or k["kick_vec"] is None:
+    def skip_already_logged_song(self) -> None:
+        """The song playing at startup is usually the last one logged before the restart; counting it again would
+        add a zero-distance play and collapse the listener's scale."""
+        playing = self.playing_now_or_none()
+        if playing is not None and playing.uri == self.last_logged_uri():
+            self._last_uri = playing.uri
+            self._last_track = playing
+            self._max_pos = playing.position_s
+
+    def restore_active_kick(self, max_age_s: float = ACTIVE_KICK_MAX_AGE_S) -> None:
+        """A kick from the last hour is still being judged across a restart."""
+        kick = self.store.last_kick()
+        if not kick or time.time() - kick["t"] > max_age_s:
             return
-        tr = self.store.track(k["track_id"])
-        if tr is None or not tr.spotify_uri:
+        if kick["pre_state"] is None or kick["kick_vec"] is None:
             return
-        forced = {e["track_id"] for e in self.store.events(kinds=("play",), since=k["t"]) if e["source"] == "kick"}
-        uris = {self.store.track(i).spotify_uri for i in forced if self.store.track(i)} | {tr.spotify_uri}
-        self.active = ActiveKick(id=k["id"], pre=k["pre_state"], kick_vec=k["kick_vec"], direction=k["direction"] or "", strength=k["strength"],
-                                 dose=k["dose"], track_uri=tr.spotify_uri, forced_seen=uris, n_since=k["n_since"] or 0, followed=k["followed"] or 0.0)
-        cur = None
+        track = self.store.track(kick["track_id"])
+        if track is None or not track.spotify_uri:
+            return
+        self.active = ActiveKick(id=kick["id"], pre=kick["pre_state"], kick_vec=kick["kick_vec"],
+                                 direction=kick["direction"] or "", strength=kick["strength"],
+                                 track_uri=track.spotify_uri, n_since=kick["n_since"] or 0,
+                                 followed=kick["followed"] or 0.0)
+
+    def playing_now_or_none(self) -> spotify.Track | None:
         try:
-            cur = self.player.now_playing()
+            return self.player.now_playing()
         except spotify.PlayerError:
-            pass
-        last = self.store.recent(1)
-        last_uri = None
-        if last:
-            lt = self.store.find_track(last[0]["artist"], last[0]["title"])
-            last_uri = lt.spotify_uri if lt else None
-        if cur is not None and cur.uri == last_uri:
-            self._last_uri = cur.uri  # the song playing now is the last one logged; don't count it twice
+            return None
 
-    def _restore_pool(self, max_age_s: float = POOL_MAX_AGE_S) -> None:
-        """The latest candidate set survives a restart: embeddings are in the store, so no Brain call is needed."""
-        rows = self.store.latest_candidate_set()
-        rows = [r for r in rows if time.time() - r["t"] <= max_age_s]
-        if not rows:
+    def last_logged_uri(self) -> str | None:
+        """The Spotify URI of the most recent event in the store, if that track is known."""
+        recent = self.store.recent(1)
+        if not recent:
+            return None
+        track = self.store.find_track(recent[0]["artist"], recent[0]["title"])
+        if track is None:
+            return None
+        return track.spotify_uri
+
+    def restore_pool(self) -> None:
+        """The pool survives a restart: every candidate ever resolved under the current lean is in the store with its
+        embedding, so no Brain call is needed to have picks again."""
+        pool = self.pool_from_library(for_track_id=None)
+        if pool is None:
             return
-        vecs = self.store.embeddings([r["track_id"] for r in rows])
-        items = []
-        for r in rows:
-            tr = self.store.track(r["track_id"])
-            if tr is not None and tr.spotify_uri and r["track_id"] in vecs:
-                items.append(PoolItem(r["id"], tr, vecs[r["track_id"]], r["reach"] or "", r["direction"] or "", r["why"] or ""))
-        if items:
-            self.pool = Pool(set_id=rows[0]["set_id"], for_track_id=rows[0]["for_track_id"], built_at=rows[0]["t"], items=items)
-            self.log(f"pool {self.pool.set_id} restored: {len(items)} picks")
+        self.pool = pool
+        self.log(f"pool {pool.set_id} restored from the library: {len(pool.items)} picks · {self.coverage_line()}")
 
-    def _ctx(self) -> dict:
+    def pool_from_library(self, for_track_id: int | None) -> Pool | None:
+        """A pool made of songs already searched, resolved and measured: the store's library for the current lean.
+        The bands it leaves empty are what the brain gets asked for."""
+        rows = self.store.library_candidates(self.cfg.lean)
+        if not rows:
+            return None
+        embeddings = self.store.embeddings([row["track_id"] for row in rows])
+        items = []
+        for row in rows:
+            track = self.store.track(row["track_id"])
+            if track is None or not track.spotify_uri or row["track_id"] not in embeddings:
+                continue
+            items.append(PoolItem(row["id"], track, track.spotify_uri, embeddings[row["track_id"]],
+                                  row["reach"] or "", row["direction"] or "", row["why"] or ""))
+        if not items:
+            return None
+        return Pool(set_id=LIBRARY_SET_ID, for_track_id=for_track_id, built_at=time.time(), items=items)
+
+    def refill_from_library(self, for_track_id: int | None) -> bool:
+        """Replace a missing or stale pool with the library, when it has anything; the observer then tops up
+        whichever bands are still empty."""
+        pool = self.pool_from_library(for_track_id)
+        if pool is None:
+            return False
+        with self._pool_lock:
+            self.pool = pool
+        self.log(f"pool refilled from the library: {len(pool.items)} picks · {self.coverage_line()}")
+        return True
+
+    def _event_context(self) -> dict:
         step, far = self.state.scale()
         return {"typical_step": round(step, 4), "far": round(far, 4), "n_state": len(self.state.history),
-                "kick_id": self.active.id if self.active else None, "dig": self.cfg.dig}
+                "kick_id": self._active_kick_id(), "dig": self.cfg.dig, "lean": self.cfg.lean}
+
+    def _active_kick_id(self) -> int | None:
+        if self.active is None:
+            return None
+        return self.active.id
 
     # ---------------------------------------------------------------- observe
     def observe(self) -> dict:
         try:
-            t = self.player.now_playing()
-        except spotify.PlayerError as e:
-            return {"error": str(e), "track": None, **self.snapshot()}
-        if t is not None and t.uri != self._last_uri:
-            self._close_previous()
-            self._on_new_track(t)
-            self._last_uri, self._last_track, self._max_pos = t.uri, t, 0.0
-        elif t is not None:
-            self._max_pos = max(self._max_pos, t.position_s)
-            self._last_track = t
-        self._maybe_follow_through(t)
-        self._maybe_prefetch()
-        return {"track": t, **self.snapshot()}
+            playing = self.player.now_playing()
+        except spotify.PlayerError as error:
+            return {"error": str(error), "track": None, **self.snapshot()}
+        if playing is not None and playing.uri != self._last_uri:
+            self.judge_previous_track()
+            self.ingest_track(playing)
+            self._last_uri = playing.uri
+            self._last_track = playing
+            self._max_pos = 0.0
+        elif playing is not None:
+            self._max_pos = max(self._max_pos, playing.position_s)
+            self._last_track = playing
+        self.maybe_prefetch()
+        return {"track": playing, **self.snapshot()}
 
-    def _close_previous(self) -> None:
+    def judge_previous_track(self) -> None:
         """When the track changes, judge the one that just ended: a skip is a signal the store should have."""
-        prev = self._last_track
-        if prev is None or prev.duration_s <= 0:
+        previous = self._last_track
+        if previous is None or previous.duration_s <= 0:
             return
-        frac = self._max_pos / prev.duration_s
-        if frac < 0.3:
-            tr = self.store.track_by_uri(prev.uri)
-            if tr is not None:
-                self.store.add_event("skip", tr.id, "spotify", skip_at_s=self._max_pos, completion=frac, ctx=self._ctx())
+        completion = self._max_pos / previous.duration_s
+        if completion >= SKIP_COMPLETION:
+            return
+        track = self.store.track_by_uri(previous.uri)
+        if track is not None:
+            self.store.add_event("skip", track.id, "spotify", skip_at_s=self._max_pos, completion=completion,
+                                 ctx=self._event_context())
 
-    def _on_new_track(self, t) -> None:
-        forced = self.active is not None and t.uri in self.active.forced_seen
-        source = "kick" if forced else "spotify"
-        tr = self.store.track_by_uri(t.uri) or self.store.upsert_track(t.artist, t.name, album=t.album, spotify_uri=t.uri,
-                                                                          duration_s=t.duration_s, resolved_how="played")
-        vec = self._embed(tr)
-        if vec is not None:
-            self.state.update(vec)
-        self.store.add_event("play", tr.id, source, popularity=t.popularity, kick_id=self.active.id if self.active else None,
-                             ctx=self._ctx())
-        if self.active and not forced and vec is not None:
-            k = self.active
-            k.n_since += 1
-            k.followed = B.followed(k.pre, k.kick_vec, self.state.vector)
-            v = B.verdict(k.followed, k.n_since)
-            self.store.update_kick(k.id, followed=k.followed, verdict=v, verdict_at=time.time(), n_since=k.n_since)
-            self.log(f"since kick #{k.id}: {t.artist} — {t.name} · followed {k.followed:.2f} → {v}")
-        if forced and t.uri == self.active.track_uri and t.popularity is not None:
-            self.store.update_kick(self.active.id, popularity=t.popularity)
+    def ingest_track(self, playing: spotify.Track) -> None:
+        """A new track is playing: put it in the store and the state, and if a kick is active, judge the kick by it."""
+        kick = self.active
+        is_kick_track = kick is not None and playing.uri == kick.track_uri
+        source = "kick" if is_kick_track else "spotify"
+        track = self.store.track_by_uri(playing.uri)
+        if track is None:
+            track = self.store.upsert_track(playing.artist, playing.name, album=playing.album, spotify_uri=playing.uri,
+                                            duration_s=playing.duration_s, resolved_how="played")
+        embedding = self.embedding_for(track)
+        if embedding is not None:
+            self.state.update(embedding, counts_for_scale=not is_kick_track)
+        self.store.add_event("play", track.id, source, popularity=playing.popularity, kick_id=self._active_kick_id(),
+                             ctx=self._event_context())
+        if kick is None:
+            return
+        if is_kick_track:
+            if playing.popularity is not None:
+                self.store.update_kick(kick.id, popularity=playing.popularity)
+        elif embedding is not None:
+            self.judge_active_kick(kick, playing)
 
-    def _embed(self, tr) -> np.ndarray | None:
-        v = self.store.embedding(tr.id)
-        if v is not None:
-            return v
-        if not tr.preview_url:
-            p = previews.lookup(tr.artist, tr.title, session=self.http)
-            if p is None or not p.preview_url:
-                self.log(f"no preview for {tr.label}; not in the state")
+    def judge_active_kick(self, kick: ActiveKick, playing: spotify.Track) -> None:
+        """One more song has played since the kick: re-measure how far the listener followed it.
+
+        The verdict is the state of play after SONGS_TO_JUDGE songs and then frozen. The state is an EWMA, so
+        measuring on would report the drift of the whole session, not Spotify's response to this kick."""
+        if kick.n_since >= bands.SONGS_TO_JUDGE:
+            return
+        now = self.state.vector
+        if now is None:
+            return  # nothing has reached the state yet, so there is no movement to measure
+        kick.n_since += 1
+        kick.followed = bands.followed(kick.pre, kick.kick_vec, now)
+        verdict = bands.verdict(kick.followed, kick.n_since)
+        self.store.update_kick(kick.id, followed=kick.followed, verdict=verdict, verdict_at=time.time(),
+                               n_since=kick.n_since)
+        self.log(f"since kick #{kick.id}: {playing.artist} — {playing.name} · followed {kick.followed:.2f} → {verdict}")
+
+    def embedding_for(self, track: Track) -> np.ndarray | None:
+        """The track's embedding: from the store if we have it, else from its preview (looked up if needed)."""
+        stored = self.store.embedding(track.id)
+        if stored is not None:
+            return stored
+        if not track.preview_url:
+            preview = previews.lookup(track.artist, track.title, session=self.http)
+            if preview is None or not preview.preview_url:
+                self.log(f"no preview for {track.label}; not in the state")
                 return None
-            tr = self.store.upsert_track(tr.artist, tr.title, album=p.album, itunes_id=p.itunes_id, preview_url=p.preview_url,
-                                         duration_s=p.duration_s)
+            track = self.store.upsert_track(track.artist, track.title, album=preview.album, itunes_id=preview.itunes_id,
+                                            preview_url=preview.preview_url, duration_s=preview.duration_s)
         try:
-            return clap.embed_track(self.store, self.embedder, tr)
-        except Exception as e:  # noqa: BLE001 — network, ffmpeg; the song just stays out of the state
-            self.log(f"embed failed for {tr.label}: {e}")
+            return clap.embed_track(self.store, self.embedder, track)
+        except Exception as error:  # noqa: BLE001 — network, afconvert; the song just stays out of the state
+            self.log(f"embed failed for {track.label}: {error}")
             return None
 
     # --------------------------------------------------------------- prefetch
     def _current_track_id(self) -> int | None:
-        cur = self.store.track_by_uri(self._last_uri) if self._last_uri else None
-        return cur.id if cur else None
+        if not self._last_uri:
+            return None
+        track = self.store.track_by_uri(self._last_uri)
+        if track is None:
+            return None
+        return track.id
 
-    def _maybe_prefetch(self) -> None:
-        if self._pool_thread and self._pool_thread.is_alive():
+    def _pool_building(self) -> bool:
+        return bool(self._pool_thread and self._pool_thread.is_alive())
+
+    def _start_pool_thread(self, for_track_id: int | None, reach: str | None = None) -> None:
+        self._pool_thread = threading.Thread(target=self._build_pool_quietly, args=(for_track_id, reach), daemon=True)
+        self._pool_thread.start()
+
+    def _build_pool_quietly(self, for_track_id: int | None, reach: str | None = None) -> None:
+        """A prefetch runs in the background with nobody to catch its exceptions, and the brain being rate-limited
+        or offline is an ordinary event: log one line and leave the existing pool alone."""
+        try:
+            if reach is None:
+                self.build_pool(for_track_id)
+            else:
+                self.top_up_pool(for_track_id, reach)
+        except BrainError as error:
+            self.log(f"prefetch skipped: {error}")
+        except Exception as error:  # noqa: BLE001 — a daemon thread must not die with a traceback on the log
+            self.log(f"prefetch failed: {type(error).__name__}: {error}")
+
+    def maybe_prefetch(self) -> None:
+        """Keep every band of the pool stocked while music plays: a full build when there is no usable pool, else a
+        top-up aimed at the first band that has run dry, so a kick of any strength finds something measured for it."""
+        if self._pool_building() or self.state.vector is None:
             return
-        cur_id = self._current_track_id()
-        stale = self.pool is None or not self.pool.items or self._off_track(cur_id)
-        if stale and self.state.vector is not None:
-            self._pool_thread = threading.Thread(target=self._build_pool, args=(cur_id,), daemon=True)
-            self._pool_thread.start()
+        if not self.api.configured:
+            # Without credentials nothing can be resolved, so asking the brain would only spend its quota.
+            if not self._warned_no_credentials:
+                self.log(NOT_CONFIGURED_MESSAGE)
+                self._warned_no_credentials = True
+            return
+        current_id = self._current_track_id()
+        stale = self.pool is None or not self.pool.items or self._pool_is_off_track(current_id)
+        if stale and not self.refill_from_library(current_id):
+            self._start_pool_thread(current_id)
+            return
+        band = self.first_empty_band()
+        if band is not None:
+            self._start_pool_thread(current_id, reach=REACH_FOR_BAND[band])
 
-    def _off_track(self, cur_id: int | None, min_age_s: float = 120.0) -> bool:
+    def pool_bands(self) -> dict[str, int]:
+        """How many pool items currently measure into each band, against the listener state as it is now."""
+        counts = {band: 0 for band in bands.STRENGTHS}
+        with self._pool_lock:
+            items = list(self.pool.items) if self.pool is not None else []
+        for item in items:
+            counts[self.state.band_for(self.state.distance(item.embedding))] += 1
+        return counts
+
+    def coverage_line(self) -> str:
+        counts = self.pool_bands()
+        return " ".join(f"{band} {count}" for band, count in counts.items())
+
+    def first_empty_band(self) -> str | None:
+        """The first band with nothing in it whose last top-up is not still cooling down: a top-up that came back
+        with nothing measured far enough must not become a loop of brain calls."""
+        now = time.time()
+        for band, count in self.pool_bands().items():
+            if count > 0:
+                continue
+            if now - self._band_asked_at.get(band, 0.0) < BAND_COOLDOWN_S:
+                continue
+            return band
+        return None
+
+    def _pool_is_off_track(self, current_id: int | None, min_age_s: float = POOL_OFF_TRACK_MIN_AGE_S) -> bool:
         """The pool was built while something else was playing and is old enough to be worth replacing."""
-        return self.pool is not None and self.pool.for_track_id != cur_id and time.time() - self.pool.built_at > min_age_s
+        if self.pool is None or self.pool.for_track_id == current_id:
+            return False
+        return time.time() - self.pool.built_at > min_age_s
 
-    def _build_pool(self, for_track_id: int | None, *, n: int | None = None, direction_hint: str | None = None) -> Pool:
-        t0 = time.time()
-        set_id = uuid.uuid4().hex[:12]
-        cands = PR.propose(self.backend, self.store, n=n or self.cfg.n_candidates, dig=self.cfg.dig, direction_hint=direction_hint,
-                           log=self.log)
-        ids = self.store.add_candidates(set_id, [c.as_row() for c in cands], for_track_id=for_track_id,
-                                        purpose="follow" if direction_hint else "pool")
-        fresh = [(cid, c) for cid, c in zip(ids, cands) if not c.rejected_reason]
-        t_llm = time.time() - t0
-        with ThreadPoolExecutor(max_workers=6) as ex:
-            items = [it for it in ex.map(lambda p: self._materialize(*p), fresh) if it is not None]
+    def build_pool(
+        self,
+        for_track_id: int | None,
+        *,
+        n: int | None = None,
+        direction_hint: str | None = None,
+        reach: str | None = None,
+    ) -> Pool:
+        """Ask the Brain for names, then materialize them in parallel. A plain pool (no direction hint) becomes
+        `self.pool`; a follow-up set with a hint is only returned; a `reach` set is one band's worth, returned for
+        `top_up_pool` to merge."""
+        started = time.time()
+        generation = self._pool_generation
+        set_id = uuid.uuid4().hex[:SET_ID_LENGTH]
+        candidates = propose.propose(self.backend, self.store, n=n or self.cfg.n_candidates, dig=self.cfg.dig,
+                                     direction_hint=direction_hint, reach=reach, lean=self.cfg.lean or None,
+                                     log=self.log)
+        purpose = "follow" if direction_hint else "pool"
+        candidate_ids = self.store.add_candidates(set_id, [candidate.as_row() for candidate in candidates],
+                                                  for_track_id=for_track_id, purpose=purpose, lean=self.cfg.lean)
+        fresh_ids = []
+        fresh_candidates = []
+        for candidate_id, candidate in zip(candidate_ids, candidates):
+            if not candidate.rejected_reason:
+                fresh_ids.append(candidate_id)
+                fresh_candidates.append(candidate)
+        brain_seconds = time.time() - started
+        with ThreadPoolExecutor(max_workers=MATERIALIZE_WORKERS) as executor:
+            materialized = executor.map(self.materialize_candidate, fresh_ids, fresh_candidates)
+            items = [item for item in materialized if item is not None]
         pool = Pool(set_id=set_id, for_track_id=for_track_id, built_at=time.time(), items=items)
-        if direction_hint is None:
+        if self.is_stale_generation(generation):
+            self.log(f"pool {set_id} discarded: settings changed while it was being built")
+            return Pool(set_id=set_id, for_track_id=for_track_id, built_at=pool.built_at, items=[])
+        if direction_hint is None and reach is None:
             with self._pool_lock:
                 self.pool = pool
-        self.log(f"pool {set_id}: {len(items)}/{len(fresh)} usable · brain {t_llm:.0f}s · total {time.time()-t0:.0f}s")
+        total_seconds = time.time() - started
+        timing = f"brain {brain_seconds:.0f}s · total {total_seconds:.0f}s"
+        what = f"pool {set_id}" if reach is None else f"top-up {reach} {set_id}"
+        self.log(f"{what}: {len(items)}/{len(fresh_ids)} usable · {timing}")
         return pool
 
-    def _materialize(self, cand_id: int, c: PR.Candidate) -> PoolItem | None:
-        """Names → a playable, measurable thing: preview (iTunes), embedding (ruler), URI (resolver). Logged either way."""
-        p = previews.lookup(c.artist, c.title, session=self.http)
-        if p is None or not p.preview_url:
+    def top_up_pool(self, for_track_id: int | None, reach: str) -> None:
+        """One band's worth of candidates, merged into the live pool. The band is marked asked-for first, so a top-up
+        whose picks all measure elsewhere does not trigger another the moment it finishes."""
+        band = next(band for band, band_reach in REACH_FOR_BAND.items() if band_reach == reach)
+        self._band_asked_at[band] = time.time()
+        fresh = self.build_pool(for_track_id, n=BAND_TOP_UP_N, reach=reach)
+        if not fresh.items:
+            return
+        self.merge_into_pool(fresh)
+        self.log(f"pool now {self.coverage_line()}")
+
+    def merge_into_pool(self, fresh: Pool) -> None:
+        """Add a set's items to the live pool, or make them the pool if there is none."""
+        with self._pool_lock:
+            if self.pool is None:
+                self.pool = fresh
+                return
+            self.pool.items = without_repeated_tracks(self.pool.items + fresh.items)
+
+    def materialize_candidate(self, cand_id: int, candidate: propose.Candidate) -> PoolItem | None:
+        """Names → a playable, measurable thing: preview (iTunes), embedding (ruler), URI (resolver).
+
+        Rejections are recorded on the candidate row, so a name that didn't make it is still in the log."""
+        preview = previews.lookup(candidate.artist, candidate.title, session=self.http)
+        if preview is None or not preview.preview_url:
             self.store.update_candidate(cand_id, rejected_reason="no preview")
             return None
-        r = RS.resolve(c.artist, c.title, c.spotify_uri, searcher=self.searcher, log=self.log)
-        if r is None:
-            self.store.update_candidate(cand_id, rejected_reason="no trusted uri")
+        resolved = resolve.resolve(candidate.artist, candidate.title, self.api, log=self.log)
+        if resolved is None:
+            self.store.update_candidate(cand_id, rejected_reason="not on spotify")
             return None
-        tr = self.store.upsert_track(p.artist, p.title, album=p.album, spotify_uri=r.uri, itunes_id=p.itunes_id, preview_url=p.preview_url,
-                                     duration_s=p.duration_s, resolved_how=r.how)
+        track = self.store.upsert_track(preview.artist, preview.title, album=preview.album, spotify_uri=resolved.uri,
+                                        itunes_id=preview.itunes_id, preview_url=preview.preview_url,
+                                        duration_s=preview.duration_s, resolved_how="api")
+        if not track.spotify_uri:
+            # The upsert attaches the resolved URI to a track that had none, so this only guards the type.
+            self.store.update_candidate(cand_id, rejected_reason="not on spotify")
+            return None
         try:
-            vec = clap.embed_track(self.store, self.embedder, tr)
-        except Exception as e:  # noqa: BLE001 — logged as a rejected candidate
-            self.store.update_candidate(cand_id, rejected_reason=f"embed failed: {e}")
+            embedding = clap.embed_track(self.store, self.embedder, track)
+        except Exception as error:  # noqa: BLE001 — logged as a rejected candidate
+            self.store.update_candidate(cand_id, rejected_reason=f"embed failed: {error}")
             return None
-        self.store.update_candidate(cand_id, track_id=tr.id)
-        return PoolItem(cand_id, tr, vec, c.reach, c.direction, c.why)
+        if embedding is None:
+            self.store.update_candidate(cand_id, rejected_reason="no preview")
+            return None
+        self.store.update_candidate(cand_id, track_id=track.id)
+        return PoolItem(cand_id, track, track.spotify_uri, embedding, candidate.reach, candidate.direction,
+                        candidate.why)
 
     def ready(self) -> int:
         with self._pool_lock:
-            return len(self.pool.items) if self.pool else 0
+            if self.pool is None:
+                return 0
+            return len(self.pool.items)
+
+    def set_brain(self, backend: Backend) -> None:
+        """Switch which CLI names the songs. The old brain's picks are discarded; the next observation rebuilds."""
+        self.backend = backend
+        self.invalidate_pool()
+
+    def invalidate_pool(self) -> None:
+        """Discard prefetched picks after a setting changes; the observer will build a fresh set. A band that
+        stayed empty under the old setting may fill under the new one, so the cooldowns go too."""
+        with self._pool_lock:
+            self.pool = None
+            self._band_asked_at.clear()
+            self._pool_generation += 1
+
+    def is_stale_generation(self, generation: int) -> bool:
+        """True when the pool was invalidated after a build with this generation started."""
+        with self._pool_lock:
+            return generation != self._pool_generation
 
     def wait_for_pool(self, timeout_s: float = 120.0) -> int:
         """Block until candidates are available (the kick path when the prefetch hasn't finished)."""
-        t_end = time.time() + timeout_s
-        while time.time() < t_end:
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
             if self.ready():
                 return self.ready()
-            if not (self._pool_thread and self._pool_thread.is_alive()):
-                self._pool_thread = threading.Thread(target=self._build_pool, args=(None,), daemon=True)
-                self._pool_thread.start()
-            time.sleep(0.5)
+            if not self._pool_building():
+                self._start_pool_thread(None)
+            time.sleep(POOL_WAIT_POLL_S)
         return self.ready()
 
     # ------------------------------------------------------------------- kick
-    def _measure(self, items: list[PoolItem]) -> list[B.Measured]:
-        measured = B.measure(self.state, [it.embedding for it in items])
-        for it, m in zip(items, measured):
-            self.store.update_candidate(it.cand_id, distance=m.distance, rel=m.rel, band=m.band)
+    def measure_pool(self, items: list[PoolItem]) -> list[bands.Measured]:
+        """Measure every pool item against the current state, recording the numbers on the candidate rows."""
+        measured = bands.measure(self.state, [item.embedding for item in items])
+        for item, measurement in zip(items, measured):
+            self.store.update_candidate(item.cand_id, distance=measurement.distance, rel=measurement.rel,
+                                        band=measurement.band)
         return measured
 
+    def measure_and_choose(self, items: list[PoolItem], target: float) -> tuple[list[bands.Measured], bands.Measured]:
+        """Measure the items and pick the one nearest the target. An empty pool is an error here, not a None."""
+        measured = self.measure_pool(items)
+        best = bands.choose(measured, target)
+        if best is None:
+            raise RuntimeError(NO_CANDIDATES_MESSAGE)
+        return measured, best
+
+    def pool_snapshot(self) -> tuple[Pool, list[PoolItem]]:
+        """The live pool and a copy of its items, taken under the lock. An empty or missing pool is an error."""
+        with self._pool_lock:
+            if self.pool is None or not self.pool.items:
+                raise RuntimeError(NO_CANDIDATES_MESSAGE)
+            return self.pool, list(self.pool.items)
+
     def kick(self, magnitude: float) -> dict:
-        if self.state.vector is None:
-            raise RuntimeError("nothing has played yet; play a song first so there is somewhere to kick from")
+        origin = self.state.vector
+        if origin is None:
+            raise RuntimeError(NO_STATE_MESSAGE)
+        if self.playing_now_or_none() is None:
+            # A Spotify that reports 'stopped' (just launched, or idle) takes `play track` without ever starting.
+            raise RuntimeError(NOT_PLAYING_MESSAGE)
+        if not self.api.configured:
+            raise RuntimeError(NOT_CONFIGURED_MESSAGE)
         if not self.ready():
             self.wait_for_pool()
-        with self._pool_lock:
-            pool, items = self.pool, list(self.pool.items) if self.pool else []
-        if not items:
-            raise RuntimeError("no playable candidates; the brain or the resolver came up empty")
-        strength, target, dose = B.strength_for(magnitude), B.target_for(magnitude), B.dose_for(magnitude)
-        measured = self._measure(items)
-        m = B.choose(measured, target)
-        if abs(m.rel - target) > OFF_TARGET_REL:
-            # nothing in the pool lands anywhere near the wind-up (the pool is left over from elsewhere, or only one reach
-            # survived resolution): ask for a fresh spread rather than lie with the least-wrong leftover
-            self.log(f"pool off target: best rel {m.rel:.2f} vs {target:.2f} among {len(items)} — rebuilding")
-            fresh = self._build_pool(self._current_track_id())
-            if fresh.items:
-                pool, items = fresh, list(fresh.items)
-                measured = self._measure(items)
-                m = B.choose(measured, target)
-        it = items[m.index]
-        pre = self.state.vector.copy()
-        played = self.player.play_and_confirm(it.track.spotify_uri)
-        kick_id = self.store.add_kick(strength=strength, magnitude=float(magnitude), target_rel=target, direction=it.direction, why=it.why,
-                                      track_id=it.track.id, distance=m.distance, rel=m.rel, band=m.band, dose=dose, pre_state=pre,
-                                      kick_vec=it.embedding, popularity=played.popularity)
-        self.store.update_candidate(it.cand_id, chosen=1, kick_id=kick_id)
-        self.store.add_event("kick", it.track.id, "kick", kick_id=kick_id, popularity=played.popularity, ctx=self._ctx())
-        self.active = ActiveKick(id=kick_id, pre=pre, kick_vec=it.embedding, direction=it.direction, strength=strength, dose=dose,
-                                 track_uri=it.track.spotify_uri, forced_seen={it.track.spotify_uri})
-        # the kick track is playing now: ingest it here so the log has it even if nobody observes again
-        self._close_previous()
-        self.state.update(it.embedding)
-        self.store.add_event("play", it.track.id, "kick", popularity=played.popularity, kick_id=kick_id, ctx=self._ctx())
-        self._last_uri, self._last_track, self._max_pos = it.track.spotify_uri, played, 0.0
+        pool, items = self.pool_snapshot()
+        strength = bands.strength_for(magnitude)
+        target = bands.target_for(magnitude)
+        measured, best = self.measure_and_choose(items, target)
+        if abs(best.rel - target) > OFF_TARGET_WARN_REL:
+            # The pool is topped up band by band in the background; at kick time the nearest measured pick plays
+            # now, and the panel says where it actually landed. Waiting on the brain here cost a minute per kick.
+            self.log(f"kick lands off target: best rel {best.rel:.2f} vs {target:.2f} among {len(items)}")
+        chosen = items[best.index]
+        pre = origin.copy()
+        played = self.player.play_and_confirm(chosen.uri)
+        kick_id = self.store.add_kick(strength=strength, magnitude=float(magnitude), target_rel=target,
+                                      direction=chosen.direction, why=chosen.why, track_id=chosen.track.id,
+                                      distance=best.distance, rel=best.rel, band=best.band, dose=1, pre_state=pre,
+                                      kick_vec=chosen.embedding, popularity=played.popularity)
+        self.store.update_candidate(chosen.cand_id, chosen=1, kick_id=kick_id)
+        self.store.add_event("kick", chosen.track.id, "kick", kick_id=kick_id, popularity=played.popularity,
+                             ctx=self._event_context())
+        self.active = ActiveKick(id=kick_id, pre=pre, kick_vec=chosen.embedding, direction=chosen.direction,
+                                 strength=strength, track_uri=chosen.uri)
+        self.follow_through(chosen, played, kick_id)
+        self._drop_from_pool(pool, chosen)
+        summary = (f"kick #{kick_id} {strength} (target {target:.2f}) → {chosen.track.label} · "
+                   f"measured {best.distance:.3f} rel {best.rel:.2f} [{best.band}] · {chosen.direction}")
+        self.log(summary)
+        candidates = []
+        for item, measurement in zip(items, measured):
+            candidates.append({"artist": item.track.artist, "title": item.track.title, "reach": item.reach,
+                               "distance": measurement.distance, "rel": measurement.rel, "band": measurement.band,
+                               "chosen": item is chosen})
+        return {"kick_id": kick_id, "strength": strength, "target_rel": target, "track": chosen.track,
+                "direction": chosen.direction, "why": chosen.why, "distance": best.distance, "rel": best.rel,
+                "band": best.band, "acceptance": best.acceptance, "candidates": candidates}
+
+    def follow_through(self, chosen: PoolItem, played: spotify.Track, kick_id: int) -> None:
+        """The kick track is playing now: ingest it here so the log has it even if nobody observes again."""
+        self.judge_previous_track()
+        self.state.update(chosen.embedding, counts_for_scale=False)
+        self.store.add_event("play", chosen.track.id, "kick", popularity=played.popularity, kick_id=kick_id,
+                             ctx=self._event_context())
+        self._last_uri = chosen.uri
+        self._last_track = played
+        self._max_pos = 0.0
+
+    def _drop_from_pool(self, pool: Pool, chosen: PoolItem) -> None:
+        """Remove the played item, but only if the pool it came from is still the live one."""
         with self._pool_lock:
             if self.pool is pool:
-                self.pool.items = [x for x in self.pool.items if x.cand_id != it.cand_id]
-        self.log(f"kick #{kick_id} {strength} (target {target:.2f}) → {it.track.label} · measured {m.distance:.3f} rel {m.rel:.2f} "
-                 f"[{m.band}] · {it.direction}")
-        if dose > 1:
-            self._follow_thread = threading.Thread(target=self._fetch_follow_through, args=(self.active, dose - 1), daemon=True)
-            self._follow_thread.start()
-        return {"kick_id": kick_id, "strength": strength, "target_rel": target, "dose": dose, "track": it.track, "direction": it.direction,
-                "why": it.why, "distance": m.distance, "rel": m.rel, "band": m.band, "acceptance": m.acceptance,
-                "candidates": [{"artist": x.track.artist, "title": x.track.title, "reach": x.reach, "distance": mm.distance, "rel": mm.rel,
-                                "band": mm.band, "chosen": x is it} for x, mm in zip(items, measured)]}
+                pool.items = [item for item in pool.items if item.cand_id != chosen.cand_id]
 
-    # --------------------------------------------------------- follow-through
-    def _fetch_follow_through(self, k: ActiveKick, n: int) -> None:
-        """While the kick song plays, get n more songs in its direction, ordered; they're played at song end."""
-        try:
-            pool = self._build_pool(None, n=n, direction_hint=k.direction)
-            k.forced_uris = [it.track.spotify_uri for it in pool.items[:n]]
-            k.forced_seen.update(k.forced_uris)
-            self.log(f"follow-through for kick #{k.id}: {len(k.forced_uris)} songs ready")
-        except Exception as e:  # noqa: BLE001 — a failed follow-through must not kill the observe loop
-            self.log(f"follow-through failed: {e}")
+    # ------------------------------------------------------------------- love
+    def toggle_love(self) -> tuple[Track, bool]:
+        """Favourite the song playing now, or take the favourite back: a `love` or `unlove` event (append-only), the
+        latest of which is what counts. The brain sees current favourites as "Loved: …"."""
+        playing = self.playing_now_or_none()
+        if playing is None:
+            raise RuntimeError(NOT_PLAYING_MESSAGE)
+        track = self.store.track_by_uri(playing.uri)
+        if track is None:
+            track = self.store.upsert_track(playing.artist, playing.name, album=playing.album, spotify_uri=playing.uri,
+                                            duration_s=playing.duration_s, resolved_how="played")
+        loved_now = not self.store.is_loved(track.id)
+        self.store.add_event("love" if loved_now else "unlove", track.id, "user", ctx=self._event_context())
+        self.log(f"{'loved' if loved_now else 'unloved'} {track.label}")
+        return track, loved_now
 
-    def _maybe_follow_through(self, t) -> None:
-        k = self.active
-        if k is None or not k.forced_uris or t is None:
-            return
-        ending = t.uri in k.forced_seen and t.duration_s > 0 and t.remaining_s <= FOLLOW_END_S
-        spotify_moved_on = t.uri not in k.forced_seen and t.position_s < 20
-        if ending or spotify_moved_on:
-            uri = k.forced_uris.pop(0)
-            try:
-                self.player.play(uri)
-                self.log(f"follow-through: {uri} ({len(k.forced_uris)} left)")
-            except spotify.PlayerError as e:
-                self.log(f"follow-through play failed: {e}")
+    def step_series(self, n: int = STEPS_SHOWN) -> list[dict]:
+        """Cosine distance from each play to the play before it, in listening order: the steps the ruler is made
+        of, with the kicks in among them. Plays without an embedding are skipped, so a step may span one. A song
+        logged twice in a row (kicked, then skipped away from) is one song, not a step of length zero."""
+        steps: list[dict] = []
+        previous: np.ndarray | None = None
+        previous_track_id: int | None = None
+        for play in self.store.play_sequence(n):
+            if play["track_id"] == previous_track_id:
+                continue
+            vector = self.store.embedding(play["track_id"])
+            if vector is None:
+                continue
+            previous_track_id = play["track_id"]
+            if previous is not None:
+                distance = float(1.0 - previous @ vector)
+                label = f"{play['artist']} — {play['title']}"
+                steps.append({"label": label, "source": play["source"], "kind": play["kind"], "distance": distance})
+            previous = vector
+        return steps
+
+    def is_loved(self, uri: str) -> bool:
+        track = self.store.track_by_uri(uri)
+        return track is not None and self.store.is_loved(track.id)
 
     # --------------------------------------------------------------- snapshot
     def snapshot(self) -> dict:
         step, far = self.state.scale()
-        k = self.active
-        last = self.store.kick(k.id) if k else None
         return {"state": {"n": len(self.state.history), "typical_step": step, "far": far},
-                "pool": {"ready": self.ready(), "building": bool(self._pool_thread and self._pool_thread.is_alive())},
-                "kick": None if not last else {"id": k.id, "strength": k.strength, "direction": k.direction, "dose": k.dose,
-                                               "track": self.store.track(last["track_id"]), "distance": last["distance"], "rel": last["rel"],
-                                               "band": last["band"], "popularity": last["popularity"], "n_since": k.n_since,
-                                               "followed": k.followed, "verdict": B.verdict(k.followed, k.n_since),
-                                               "forced_left": len(k.forced_uris)}}
+                "pool": {"ready": self.ready(), "building": self._pool_building(), "bands": self.pool_bands()},
+                "kick": self._kick_snapshot()}
+
+    def _kick_snapshot(self) -> dict | None:
+        kick = self.active
+        if kick is None:
+            return None
+        stored = self.store.kick(kick.id)
+        if not stored:
+            return None
+        chosen = [{"artist": play["artist"], "title": play["title"]}
+                  for play in self.store.plays_since_kick(kick.id) if play["kind"] == "play"]
+        return {"id": kick.id, "strength": kick.strength, "direction": kick.direction,
+                "track": self.store.track(stored["track_id"]), "distance": stored["distance"], "rel": stored["rel"],
+                "band": stored["band"], "popularity": stored["popularity"], "n_since": kick.n_since,
+                "followed": kick.followed, "verdict": bands.verdict(kick.followed, kick.n_since),
+                "target_rel": stored["target_rel"], "magnitude": stored["magnitude"], "chosen": chosen}

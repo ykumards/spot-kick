@@ -1,58 +1,151 @@
 # Spot Kick 🦵
 
-A menubar leg that kicks your Spotify queue a measured distance — and tells you whether the algorithm followed.
+A tiny macOS experiment for nudging Spotify's recommendations.
 
-Music apps pull you back to the same songs. Wind the leg back — a little for a **tap**, more for a **kick**, all the way for a **boot** — let go, and Spot Kick plays one song *that far* from where you are, in a direction you haven't been. Spotify continues from there. The panel then reports, in numbers, whether the queue **returned**, **bent**, or **followed**.
+Wind up the menubar leg and let go. Spot Kick chooses one song at roughly the distance you asked for, plays it, then gets out of the way. Spotify chooses what follows. The panel watches the next songs and reports whether Spotify returned to your old neighborhood, bent toward the kick, or followed it.
 
-It is not a playlist generator and it does not pretend to know how Spotify works inside. It is a steering instrument for a recommender you don't control, with a ruler attached.
+This is deliberately the smallest useful version. It is not a playlist generator, a Spotify replacement, or a claim about Spotify's internals.
 
-## How a kick works
+## The v0 loop
 
-1. **The ruler.** Every song you play is embedded from its 30-second preview with [CLAP](https://github.com/LAION-AI/CLAP) (run locally with onnxruntime). Your recent listening becomes a point on a sphere; "far" is measured on *your own* recent spread, not a fixed threshold.
-2. **The brain, narrowly.** While a song plays, an LLM is asked for six real songs in six different directions — near, adjacent, far — given a short, query-built summary of your history (last plays, most-played artists, what you skipped, directions already used). It names songs. It never scores anything and never sees a vector.
-3. **The choice.** All six are resolved to real Spotify tracks, embedded, and measured. When you release the leg, the one whose *measured* distance is nearest your wind-up is played. The leg tells the truth because the choice is made after measuring.
-4. **The dose.** A tap is one song; a kick forces three in that direction; a boot five — because one song gets absorbed and five bend the queue (see the research).
-5. **The verdict.** Every song Spotify plays afterwards is embedded too. `followed` is how far your listening state moved along the kick, as a fraction of the kick itself: below 0.25 it *returned*, below 0.6 it *bent*, otherwise it *followed*.
+```text
+recent Spotify plays
+        ↓
+the brain proposes six possible songs
+        ↓
+each song is resolved, previewed, embedded, and measured
+        ↓
+the song nearest your wind-up is played once
+        ↓
+Spotify continues; Spot Kick measures the continuation
+```
 
-Everything — tracks, embeddings, plays, skips, kicks, every candidate proposed and why it was rejected — lands in one SQLite file, `~/.spotkick/spotkick.db`. It's your data; DuckDB reads it directly.
+The language model only proposes names and a direction. It does not decide which candidate is near or far. Spot Kick embeds 30-second audio previews with CLAP and makes that choice in the measured audio space.
 
-## Install (developers, for now)
+The listener state is an exponentially weighted average of recent song embeddings. Distance is calibrated against the listener's own recent movement, so a tap, kick, and boot are relative to this listening session rather than universal genre labels.
 
-macOS 14+, the Spotify desktop app, `ffmpeg` (`brew install ffmpeg`), Python 3.12.
+After the kick, Spot Kick projects the changing listener state onto the kick direction:
+
+```text
+followed = ((current − before) · (kick − before)) / |kick − before|²
+```
+
+Near zero means Spotify returned; near one means it continued in the kick's direction. The label waits for two Spotify-chosen songs before settling on returned, bent, or followed.
+
+## Run it
+
+Requirements:
+
+- macOS 14 or newer, with the Spotify desktop app
+- [`uv`](https://docs.astral.sh/uv/) (it fetches Python itself)
+- the Codex CLI or the Claude Code CLI, installed and logged in (see "Choosing a brain")
+- a Spotify developer app of your own (see "Spotify credentials")
+
+```sh
+uv tool install git+https://github.com/ykumards/spot-kick
+spotkick                      # the menubar app; the first run downloads the CLAP model into ~/.spotkick/models/
+```
+
+`uv tool upgrade spotkick` follows the repo. Nothing else to install: previews are decoded with macOS's own
+`afconvert`, and Spotify is driven over AppleScript.
+
+To work on it instead:
 
 ```sh
 git clone https://github.com/ykumards/spot-kick && cd spot-kick
-python3 -m venv .venv && .venv/bin/pip install -e ".[app]"
+uv venv .venv && uv pip install -e ".[dev]"
+.venv/bin/spotkick
 ```
 
-Pick a brain — one of:
+### Spotify credentials
 
-- **Codex CLI** (default): `codex` installed and logged in.
-- **OpenAI API**: `export OPENAI_API_KEY=…` and set `llm_backend = "openai"` in `~/.spotkick/config.toml`.
-- **Local**: run a `llama-server` (or Ollama) and set `llm_backend = "local"`, `local_base_url = "http://127.0.0.1:8080/v1"`, `llm_model = "…"`.
-
-Optional but recommended: a free [Spotify developer app](https://developer.spotify.com/dashboard) so track ids are looked up exactly rather than searched for — `export SPOTIFY_CLIENT_ID=… SPOTIFY_CLIENT_SECRET=…`.
-
-The first run downloads the CLAP audio model (116 MB) into `~/.spotkick/models/`.
+The brain names songs; only Spotify knows track ids. Spot Kick looks each name up with the Web API using your own
+app's credentials — the Client Credentials flow, so there is no login and no browser. Create an app at
+[developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) (any name, any redirect URI; it is
+never used), then either paste its id and secret into the panel's settings (gear icon), or from a terminal:
 
 ```sh
-.venv/bin/spotkick               # the menubar leg
-.venv/bin/spotkick kick boot     # the same kick from the terminal, then watch what follows
-.venv/bin/spotkick watch         # just observe and keep the candidate pool warm
-.venv/bin/spotkick status        # what the store knows
-.venv/bin/spotkick prompt        # exactly what the brain would be sent (nothing is sent)
-.venv/bin/spotkick forget        # delete the database
+.venv/bin/spotkick connect <client-id>     # prompts for the secret without echoing it
 ```
 
-A signed `.dmg` and a Homebrew cask are the plan for the public release; see `PLAN.md`.
+The credentials are checked against Spotify before anything is kept. The client id goes to
+`~/.spotkick/config.toml`; the secret goes to your macOS Keychain, never to a file of ours. For terminal or CI runs
+`SPOTKICK_SPOTIFY_CLIENT_SECRET` in the environment is used instead of the Keychain. Without credentials the app
+still observes and logs plays, but it will not ask the brain for candidates and a kick says what is missing.
 
-## The research behind it
+### Choosing a brain
 
-Spot Kick grew out of a study of a recommender trained on 9,000 listeners' histories, treated as a dynamical system: does it have an attractor, and can a single song escape it? Short answers: the personal attractor is real dynamics (a recommender that updates on what you play forgets your starting point far more than a frozen ranking does); one song can't move it; five to ten coherent songs bend it for about half the horizon before it returns. Those results decide the design: a kick is a direction, not a destination; the dose matters; and the app measures rather than promises. `docs/research.md` has the details.
+The brain only names songs; it never sees a vector and it is never asked for a track id. It is one of two
+coding-agent CLIs, run as a subprocess with whatever login it already has — no API key, no SDK. Pick it with the radio button in the panel's settings, or in
+`~/.spotkick/config.toml`:
+
+```toml
+llm_backend   = "codex"             # codex · claude
+
+llm_model     = "gpt-5.6-terra"     # Codex's model
+llm_reasoning = "low"
+
+claude_model  = "sonnet"            # Claude Code's model
+```
+
+### Steering the brain
+
+Two knobs, both plain text in the prompt. **Lean**, the button next to the leg, narrows the search space: tick up
+to ten genres and moods, add your own words (a language, an era, an instrument), and every pick stays inside them
+while the kick strength still varies within. It is stored as one comma-joined line, `lean = "jazz, calm,
+Portuguese"`. **Digging**, in settings, is how far below the surface it
+looks (any · hits off · deep). Changing either drops the current picks and rebuilds them in the background.
+
+```toml
+dig  = 1                            # 0 any · 1 hits off · 2 deep
+lean = ""                           # empty = no lean
+```
+
+Useful terminal commands:
+
+```sh
+.venv/bin/spotkick kick boot  # kick once, then watch two Spotify songs
+.venv/bin/spotkick watch      # observe plays and keep picks warm
+.venv/bin/spotkick status     # inspect the local history
+.venv/bin/spotkick prompt     # see exactly what the brain would receive
+.venv/bin/spotkick forget     # delete the local database
+```
+
+## What v0 keeps
+
+- the menubar leg and wind-up strength
+- one candidate call to the brain, prefetched while music plays
+- verified Spotify track resolution
+- local CLAP embeddings and listener-relative distance
+- one-song kicks
+- observation and returned/bent/followed verdicts, decided by the two Spotify-chosen songs after the kick and then frozen
+- a local SQLite event log for later analysis
+
+## Deliberately deferred
+
+- multi-song interventions
+- a home-grown recommender (“Mini-Me”)
+- LLM providers beyond the Codex and Claude Code CLIs
+- Spotify account login (the developer's own app credentials are the only Spotify access)
+- automated control experiments
+- signing, notarization, and public distribution
+
+The research suggests coherent multi-song interventions may move a recommender more strongly. V0 first establishes whether the simplest intervention—a single chosen song—can be used reliably in the real Spotify loop. More machinery belongs only after that loop produces evidence.
 
 ## Privacy
 
-Local SQLite. Song names go to the LLM provider you chose; nothing else leaves your machine. `spotkick forget` wipes everything. Not affiliated with Spotify.
+Tracks, embeddings, plays, skips, candidates, and kicks live in `~/.spotkick/spotkick.db`. Song names and the compact listening context are sent through the logged-in CLI (Codex or Claude Code) when candidates are requested. Audio previews are embedded locally. `spotkick forget` removes the database.
+
+Spot Kick is not affiliated with Spotify.
+
+## Development
+
+```sh
+.venv/bin/python -m pytest -q
+RUFF_CACHE_DIR=/tmp/spotkick-ruff-cache .venv/bin/ruff check .
+```
+
+The active scope and definition of done live in [PLAN.md](PLAN.md).
 
 ## License
 

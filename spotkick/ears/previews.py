@@ -3,10 +3,33 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Protocol
 
 import requests
 
 SEARCH = "https://itunes.apple.com/search"
+SEARCH_LIMIT = 8
+SEARCH_TIMEOUT_S = 15
+NON_ALPHANUMERIC = re.compile(r"[^a-z0-9]+")
+
+
+class HttpResponse(Protocol):
+    """The slice of `requests.Response` the lookups read."""
+
+    @property
+    def status_code(self) -> int: ...
+
+    def json(self) -> dict: ...
+
+    def raise_for_status(self) -> None: ...
+
+
+class HttpClient(Protocol):
+    """Anything with a `requests`-shaped `get`: the `requests` module, a `requests.Session`, or a test fake."""
+
+    def get(
+        self, url: str, *, params: dict | None = ..., headers: dict | None = ..., timeout: float | None = ...
+    ) -> HttpResponse: ...
 
 
 @dataclass(frozen=True)
@@ -20,28 +43,56 @@ class Preview:
     genre: str | None
 
 
-def _norm(x: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", x.lower()).strip()
+def normalize_text(text: str) -> str:
+    """Lowercase, punctuation collapsed to single spaces, so "Linha do Horizonte" matches "linha-do-horizonte"."""
+    return NON_ALPHANUMERIC.sub(" ", text.lower()).strip()
 
 
-def lookup(artist: str, title: str, *, country: str = "us", session: requests.Session | None = None) -> Preview | None:
-    """Best match for (artist, title) with a preview. Prefers exact-ish artist and title matches, then the shortest title
-    (album versions over remixes/live cuts)."""
+def match_strength(wanted: str, found: str) -> int:
+    """2 for an exact match, 1 when one contains the other, 0 otherwise. Both inputs already normalized."""
+    if wanted == found:
+        return 2
+    if wanted in found or found in wanted:
+        return 1
+    return 0
+
+
+def rank_key(result: dict, wanted_artist: str, wanted_title: str) -> tuple[int, int, int]:
+    """Higher is better: artist match, then title match, then the shortest title (album cuts over remixes/live)."""
+    found_artist = normalize_text(result.get("artistName", ""))
+    found_title = normalize_text(result.get("trackName", ""))
+    artist_strength = match_strength(wanted_artist, found_artist)
+    title_strength = match_strength(wanted_title, found_title)
+    return (artist_strength, title_strength, -len(found_title))
+
+
+def to_preview(result: dict) -> Preview:
+    duration_s = (result.get("trackTimeMillis") or 0) / 1000.0 or None
+    return Preview(
+        artist=result["artistName"],
+        title=result["trackName"],
+        album=result.get("collectionName"),
+        itunes_id=result["trackId"],
+        preview_url=result.get("previewUrl"),
+        duration_s=duration_s,
+        genre=result.get("primaryGenreName"),
+    )
+
+
+def lookup(artist: str, title: str, *, country: str = "us", session: HttpClient | None = None) -> Preview | None:
+    """Best match for (artist, title) with a preview. Prefers exact-ish artist and title matches, then the shortest
+    title (album versions over remixes/live cuts)."""
     http = session or requests
-    r = http.get(SEARCH, params={"term": f"{artist} {title}", "entity": "song", "limit": 8, "country": country}, timeout=15)
-    r.raise_for_status()
-    results = [x for x in r.json().get("results", []) if x.get("previewUrl")]
+    params = {"term": f"{artist} {title}", "entity": "song", "limit": SEARCH_LIMIT, "country": country}
+    response = http.get(SEARCH, params=params, timeout=SEARCH_TIMEOUT_S)
+    response.raise_for_status()
+    results = [result for result in response.json().get("results", []) if result.get("previewUrl")]
     if not results:
         return None
-    a, t = _norm(artist), _norm(title)
-
-    def score(x):
-        xa, xt = _norm(x.get("artistName", "")), _norm(x.get("trackName", ""))
-        return (2 * (a == xa) + (a in xa or xa in a), 2 * (t == xt) + (t in xt or xt in t), -len(xt))
-
-    best = max(results, key=score)
-    if score(best)[0] == 0 and score(best)[1] == 0:
-        return None  # nothing resembling the request
-    return Preview(artist=best["artistName"], title=best["trackName"], album=best.get("collectionName"), itunes_id=best["trackId"],
-                   preview_url=best.get("previewUrl"), duration_s=(best.get("trackTimeMillis") or 0) / 1000.0 or None,
-                   genre=best.get("primaryGenreName"))
+    wanted_artist = normalize_text(artist)
+    wanted_title = normalize_text(title)
+    best = max(results, key=lambda result: rank_key(result, wanted_artist, wanted_title))
+    artist_strength, title_strength, _ = rank_key(best, wanted_artist, wanted_title)
+    if artist_strength == 0 or title_strength == 0:
+        return None  # a preview for another song would corrupt the ruler
+    return to_preview(best)

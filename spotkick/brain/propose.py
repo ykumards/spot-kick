@@ -4,11 +4,23 @@ The output is names only — resolving, embedding, and choosing happen elsewhere
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .prompts import CANDIDATES_SCHEMA, Context, candidates_prompt
 
-URI_RE = re.compile(r"spotify:track:[A-Za-z0-9]{22}")
+MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+BARE_URL_RE = re.compile(r"https?://\S+")
+
+DEFAULT_REACH = "adjacent"
+REJECT_DUPLICATE = "duplicate in set"
+REJECT_KNOWN = "already known"
+
+Logger = Callable[[str], None]
+
+
+def ignore_log(message: str) -> None:
+    return None
 
 
 @dataclass
@@ -18,57 +30,90 @@ class Candidate:
     artist: str
     title: str
     why: str
-    spotify_uri: str | None
     rejected_reason: str | None = None
 
     def as_row(self) -> dict:
-        return {"reach": self.reach, "direction": self.direction, "artist": self.artist, "title": self.title, "why": self.why,
-                "spotify_uri": self.spotify_uri, "rejected_reason": self.rejected_reason}
+        return {
+            "reach": self.reach,
+            "direction": self.direction,
+            "artist": self.artist,
+            "title": self.title,
+            "why": self.why,
+            "rejected_reason": self.rejected_reason,
+        }
+
+    def dedup_key(self) -> str:
+        return f"{self.artist.lower()}|{self.title.lower()}"
 
 
-def _strip(text: str) -> str:
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text or "")
-    return re.sub(r"https?://\S+", "", text).strip()
+def strip_links(text: str) -> str:
+    """Models sometimes decorate free text with markdown links or URLs despite being told not to; keep the words."""
+    without_markdown = MARKDOWN_LINK_RE.sub(r"\1", text or "")
+    return BARE_URL_RE.sub("", without_markdown).strip()
 
 
-def _parse(raw: list[dict]) -> list[Candidate]:
-    out = []
-    for c in raw:
-        uri = URI_RE.search(c.get("spotify_uri") or "")
-        artist, title = (c.get("artist") or "").strip(), (c.get("title") or "").strip()
+def parse_candidates(raw_candidates: list[dict]) -> list[Candidate]:
+    """Turn the Brain's JSON rows into Candidates, dropping rows missing an artist or title."""
+    candidates = []
+    for raw in raw_candidates:
+        artist = (raw.get("artist") or "").strip()
+        title = (raw.get("title") or "").strip()
         if not artist or not title:
             continue
-        out.append(Candidate(reach=c.get("reach") or "adjacent", direction=_strip(c.get("direction", "")), artist=artist, title=title,
-                             why=_strip(c.get("why", "")), spotify_uri=uri.group(0) if uri else None))
-    return out
+        candidate = Candidate(
+            reach=raw.get("reach") or DEFAULT_REACH,
+            direction=strip_links(raw.get("direction", "")),
+            artist=artist,
+            title=title,
+            why=strip_links(raw.get("why", "")),
+        )
+        candidates.append(candidate)
+    return candidates
 
 
-def propose(backend, store, *, n: int = 6, dig: int = 1, direction_hint: str | None = None, taste: list[str] | None = None,
-            min_fresh: int = 3, timeout: int = 240, log=lambda m: None) -> list[Candidate]:
+def mark_rejects(candidates: list[Candidate], store, seen_keys: set[str]) -> None:
+    """Flag repeats within the set and anything the listener already played, kicked to, or picked."""
+    for candidate in candidates:
+        key = candidate.dedup_key()
+        if key in seen_keys:
+            candidate.rejected_reason = REJECT_DUPLICATE
+        elif store.seen(candidate.artist, candidate.title):
+            candidate.rejected_reason = REJECT_KNOWN
+        seen_keys.add(key)
+
+
+def ask_brain(backend, prompt: str, timeout: int) -> list[Candidate]:
+    response = backend.complete_json(prompt, CANDIDATES_SCHEMA, timeout=timeout)
+    return parse_candidates(response.get("candidates", []))
+
+
+def propose(
+    backend,
+    store,
+    *,
+    n: int = 6,
+    dig: int = 1,
+    direction_hint: str | None = None,
+    reach: str | None = None,
+    lean: str | None = None,
+    taste: list[str] | None = None,
+    min_fresh: int = 3,
+    timeout: int = 240,
+    log: Logger = ignore_log,
+) -> list[Candidate]:
     """Candidates the listener hasn't already played/kicked/picked, with the rejects kept (marked) for the log."""
-    ctx = Context.from_store(store, taste=taste)
-    prompt = candidates_prompt(ctx, n=n, dig=dig, direction_hint=direction_hint)
-    cands = _parse(backend.complete_json(prompt, CANDIDATES_SCHEMA, timeout=timeout).get("candidates", []))
-    seen_here: set[str] = set()
-    for c in cands:
-        key = f"{c.artist.lower()}|{c.title.lower()}"
-        if key in seen_here:
-            c.rejected_reason = "duplicate in set"
-        elif store.seen(c.artist, c.title):
-            c.rejected_reason = "already known"
-        seen_here.add(key)
-    fresh = [c for c in cands if not c.rejected_reason]
-    if len(fresh) < min_fresh:
-        rejects = [f"{c.artist} — {c.title}" for c in cands if c.rejected_reason]
-        log(f"brain: only {len(fresh)} fresh of {len(cands)}; asking again")
-        more = _parse(backend.complete_json(candidates_prompt(ctx, n=n, dig=dig, direction_hint=direction_hint, rejects=rejects),
-                                            CANDIDATES_SCHEMA, timeout=timeout).get("candidates", []))
-        for c in more:
-            key = f"{c.artist.lower()}|{c.title.lower()}"
-            if key in seen_here:
-                c.rejected_reason = "duplicate in set"
-            elif store.seen(c.artist, c.title):
-                c.rejected_reason = "already known"
-            seen_here.add(key)
-        cands += more
-    return cands
+    context = Context.from_store(store, taste=taste)
+    first_prompt = candidates_prompt(context, n=n, dig=dig, direction_hint=direction_hint, reach=reach, lean=lean)
+    candidates = ask_brain(backend, first_prompt, timeout)
+    seen_keys: set[str] = set()
+    mark_rejects(candidates, store, seen_keys)
+    fresh = [candidate for candidate in candidates if not candidate.rejected_reason]
+    if len(fresh) >= min_fresh:
+        return candidates
+    rejects = [f"{candidate.artist} — {candidate.title}" for candidate in candidates if candidate.rejected_reason]
+    log(f"brain: only {len(fresh)} fresh of {len(candidates)}; asking again")
+    retry_prompt = candidates_prompt(context, n=n, dig=dig, direction_hint=direction_hint, rejects=rejects,
+                                     reach=reach, lean=lean)
+    more = ask_brain(backend, retry_prompt, timeout)
+    mark_rejects(more, store, seen_keys)
+    return candidates + more

@@ -1,0 +1,235 @@
+{
+  "generated_from_commit": "d2ac79ddccf33c65ca87ed43c00b8db19ce778a2",
+  "sample_rate": 48000,
+  "tolerances": {
+    "logmel_max_abs_db": 0.002899169921875,
+    "features_max_abs_db": 0.002899169921875,
+    "embedding_max_cosine_distance": 0.0001,
+    "bands_state_max_abs": 1e-06,
+    "bands_distance_max_abs": 1e-06,
+    "bands_scale_max_abs": 1e-06,
+    "bands_rel_max_abs": 1e-05,
+    "bands_exact_max_abs": 1e-09
+  },
+  "front_end": {
+    "n_fft": 1024,
+    "hop": 480,
+    "n_mels": 64,
+    "clip_seconds": 10,
+    "power_floor": 1e-10,
+    "window": "hann-periodic",
+    "padding": "reflect, n_fft // 2",
+    "scale": "10 * log10",
+    "mel_filters": "clap-mel.npy, shipped with the model"
+  },
+  "lcg": {
+    "multiplier": 1664525,
+    "increment": 1013904223,
+    "modulus": 4294967296
+  },
+  "waves": [
+    {
+      "name": "long",
+      "seconds": 15.0,
+      "description": "15 s, three deterministic crops",
+      "components": [
+        {
+          "kind": "sine",
+          "hz": 440.0,
+          "amplitude": 0.5
+        },
+        {
+          "kind": "chirp",
+          "start_hz": 80.0,
+          "end_hz": 12000.0,
+          "amplitude": 0.3
+        },
+        {
+          "kind": "noise",
+          "seed": 7,
+          "amplitude": 0.1
+        }
+      ]
+    },
+    {
+      "name": "exact",
+      "seconds": 10.0,
+      "description": "exactly 10 s, one middle crop",
+      "components": [
+        {
+          "kind": "chirp",
+          "start_hz": 50.0,
+          "end_hz": 14000.0,
+          "amplitude": 0.5
+        },
+        {
+          "kind": "noise",
+          "seed": 5,
+          "amplitude": 0.02
+        }
+      ]
+    },
+    {
+      "name": "short",
+      "seconds": 2.5,
+      "description": "2.5 s, repeat-padded to 10 s",
+      "components": [
+        {
+          "kind": "sine",
+          "hz": 220.0,
+          "amplitude": 0.5
+        },
+        {
+          "kind": "noise",
+          "seed": 3,
+          "amplitude": 0.2
+        }
+      ]
+    }
+  ],
+  "logmel": [
+    {
+      "file": "logmel_long.f32",
+      "shape": [
+        1501,
+        64
+      ],
+      "dtype": "float32-le",
+      "wave": "long"
+    },
+    {
+      "file": "logmel_exact.f32",
+      "shape": [
+        1001,
+        64
+      ],
+      "dtype": "float32-le",
+      "wave": "exact"
+    },
+    {
+      "file": "logmel_short.f32",
+      "shape": [
+        251,
+        64
+      ],
+      "dtype": "float32-le",
+      "wave": "short"
+    }
+  ],
+  "features": [
+    {
+      "file": "features_long.f32",
+      "shape": [
+        3,
+        1,
+        1001,
+        64
+      ],
+      "dtype": "float32-le",
+      "wave": "long"
+    },
+    {
+      "file": "features_exact.f32",
+      "shape": [
+        1,
+        1,
+        1001,
+        64
+      ],
+      "dtype": "float32-le",
+      "wave": "exact"
+    },
+    {
+      "file": "features_short.f32",
+      "shape": [
+        1,
+        1,
+        1001,
+        64
+      ],
+      "dtype": "float32-le",
+      "wave": "short"
+    }
+  ],
+  "embeddings": [
+    {
+      "file": "embedding_long.f32",
+      "shape": [
+        512
+      ],
+      "dtype": "float32-le",
+      "wave": "long"
+    },
+    {
+      "file": "embedding_exact.f32",
+      "shape": [
+        512
+      ],
+      "dtype": "float32-le",
+      "wave": "exact"
+    },
+    {
+      "file": "embedding_short.f32",
+      "shape": [
+        512
+      ],
+      "dtype": "float32-le",
+      "wave": "short"
+    }
+  ],
+  "prompts": [
+    {
+      "file": "prompt_plain.txt",
+      "kwargs": {
+        "n": 6,
+        "dig": 1
+      }
+    },
+    {
+      "file": "prompt_deep.txt",
+      "kwargs": {
+        "n": 6,
+        "dig": 2
+      }
+    },
+    {
+      "file": "prompt_follow.txt",
+      "kwargs": {
+        "n": 4,
+        "dig": 1,
+        "direction_hint": "spiritual jazz, modal drift"
+      }
+    },
+    {
+      "file": "prompt_far.txt",
+      "kwargs": {
+        "n": 4,
+        "dig": 1,
+        "reach": "far"
+      }
+    },
+    {
+      "file": "prompt_lean.txt",
+      "kwargs": {
+        "n": 6,
+        "dig": 1,
+        "lean": "melancholic, Portuguese"
+      }
+    }
+  ],
+  "mel_filters": {
+    "file": "mel_filters.f32",
+    "shape": [
+      513,
+      64
+    ],
+    "dtype": "float32-le"
+  },
+  "one_ulp_sensitivity_db": 0.0002899169921875,
+  "bands": {
+    "file": "bands.json"
+  },
+  "context": {
+    "file": "context.json"
+  }
+}

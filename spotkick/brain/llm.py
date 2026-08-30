@@ -1,34 +1,40 @@
-"""The Brain's contract. Not an agent: a stateless candidate generator with two operations.
+"""The Brain's small contract.
 
     complete_json(prompt, schema) -> dict     structured output, validated against `schema` by the backend
-    search_uri(artist, title) -> str | None   a Spotify track URI found with live search (optional per backend)
 
-Backends: `codex` (the Codex CLI, the author's ChatGPT login), `openai` (the OpenAI API or any OpenAI-compatible
-server — llama.cpp's `llama-server`, Ollama — chosen by base_url). Claude is deliberately not an option.
+Two backends, both coding-agent CLIs that already hold a login: the Codex CLI and the Claude Code CLI.
+`cfg.llm_backend` picks one. The brain names songs and nothing else; ids come from Spotify (`brain.resolve`).
 """
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
+from ..config import Config
+
+if TYPE_CHECKING:
+    from .claude import ClaudeCode
+    from .codex import Codex
+
+BACKEND_NAMES = ("codex", "claude")
 
 class Backend(Protocol):
     name: str
 
     def complete_json(self, prompt: str, schema: dict, *, timeout: int = 240) -> dict: ...
 
-    def search_uri(self, artist: str, title: str) -> str | None: ...
-
 
 class BrainError(RuntimeError):
     pass
 
 
-def make_backend(cfg) -> Backend:
-    if cfg.llm_backend == "codex":
-        from .codex import Codex
-        return Codex(model=cfg.llm_model, reasoning=cfg.llm_reasoning)
-    if cfg.llm_backend in ("openai", "local"):
-        from .openai_compat import OpenAICompat
-        base_url = cfg.local_base_url if cfg.llm_backend == "local" else None
-        return OpenAICompat(model=cfg.llm_model, base_url=base_url, reasoning=cfg.llm_reasoning)
-    raise BrainError(f"unknown llm backend {cfg.llm_backend!r}")
+def make_backend(cfg: Config) -> Codex | ClaudeCode:
+    # Deferred: the backend modules import BrainError from this module, so top-level imports would be circular.
+    from .claude import ClaudeCode
+    from .codex import Codex
+
+    if cfg.llm_backend == "claude":
+        return ClaudeCode(model=cfg.claude_model)
+    if cfg.llm_backend != "codex":
+        raise BrainError(f"unknown llm_backend {cfg.llm_backend!r}; choose one of {', '.join(BACKEND_NAMES)}")
+    return Codex(model=cfg.llm_model, reasoning=cfg.llm_reasoning)
+

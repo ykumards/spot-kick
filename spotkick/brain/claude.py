@@ -1,0 +1,69 @@
+"""Claude Code CLI backend: `claude -p --json-schema`, using whatever login the CLI has. No SDK, no key.
+
+Same shape as the Codex backend, different flags. `--json-schema` makes the CLI validate the answer against our
+schema and hand it back as `structured_output`; `--tools ""` leaves it no tools at all. Every call runs from an
+empty directory so no project settings or CLAUDE.md leak into the prompt.
+"""
+from __future__ import annotations
+
+import json
+import tempfile
+
+from . import cli
+from .llm import BrainError
+
+DEFAULT_MODEL = "sonnet"
+DEFAULT_BINARY = "claude"
+# Structured output is an internal tool call, so a proposal takes two turns.
+PROPOSE_MAX_TURNS = 4
+NO_TOOLS = ""
+# Claude Code thinks by default, and naming six songs made it think for ~11k tokens: two minutes per call against
+# ten seconds without. The env var is honoured by every CLI version; the setting is the documented switch.
+NO_THINKING_ENV = {"MAX_THINKING_TOKENS": "0"}
+NO_THINKING_SETTINGS = '{"alwaysThinkingEnabled": false}'
+OUTPUT_PREVIEW_CHARS = 200
+
+
+class ClaudeCode:
+    """The other brain: Anthropic's models through the Claude Code CLI."""
+
+    name = "claude"
+
+    def __init__(self, model: str = DEFAULT_MODEL, binary: str = DEFAULT_BINARY):
+        self.model = model
+        self.binary = binary
+
+    def base_command(self, *, tools: str, max_turns: int) -> list[str]:
+        """The `claude -p` invocation shared by every call: one JSON result, no saved session, only the named
+        tools. `--tools` is variadic and would swallow the prompt, so a boolean flag comes last."""
+        command = [self.binary, "-p", "--model", self.model, "--output-format", "json", "--tools", tools]
+        command += ["--max-turns", str(max_turns), "--settings", NO_THINKING_SETTINGS, "--no-session-persistence"]
+        return command
+
+    def complete_json(self, prompt: str, schema: dict, *, timeout: int = 240) -> dict:
+        command = self.base_command(tools=NO_TOOLS, max_turns=PROPOSE_MAX_TURNS)
+        command += ["--json-schema", json.dumps(schema), prompt]
+        with tempfile.TemporaryDirectory() as workdir:
+            result = cli.run(command, timeout=timeout, tool="claude", cwd=workdir, extra_env=NO_THINKING_ENV)
+        if result.returncode != 0:
+            raise BrainError(f"claude failed: {cli.last_line(result.stderr or result.stdout)}")
+        envelope = parse_envelope(result.stdout)
+        if envelope.get("is_error"):
+            errors = envelope.get("errors") or [envelope.get("result") or "unknown error"]
+            raise BrainError(f"claude failed: {errors[0]}")
+        structured = envelope.get("structured_output")
+        if not isinstance(structured, dict):
+            raise BrainError("claude returned no structured output")
+        return structured
+
+
+
+def parse_envelope(stdout: str) -> dict:
+    """The single JSON object `--output-format json` prints."""
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError as error:
+        raise BrainError(f"claude returned non-JSON: {stdout[:OUTPUT_PREVIEW_CHARS]}") from error
+    if not isinstance(envelope, dict):
+        raise BrainError("claude returned an unexpected shape")
+    return envelope

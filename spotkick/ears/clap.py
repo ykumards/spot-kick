@@ -1,103 +1,171 @@
 """The ruler: CLAP audio embeddings of 30-second previews, run with onnxruntime. Every distance in Spot Kick
 is measured here. The LLM never sees these vectors and cannot grade its own work.
 
-Runtime needs: `clap-audio.onnx` (the HTSAT audio tower + projection, 116 MB, exported by
-`scripts/export_clap_onnx.py`) and `clap-mel.npy` (its mel filterbank) in `~/.spotkick/models/`, plus ffmpeg
-for decoding. No torch, no transformers. Vectors are cached in the store, so a track is embedded once.
+Runtime needs: `clap-audio.onnx` (the HTSAT audio tower + projection, fp16, 59 MB, exported by
+`scripts/export_clap_onnx.py`) and `clap-mel.npy` (its mel filterbank) in `~/.spotkick/models/`. Previews are
+decoded with macOS's own `afconvert`, so there is nothing to brew. No torch, no transformers. Vectors are cached
+in the store, so a track is embedded once.
 """
 from __future__ import annotations
 
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from . import features as F
+from ..config import HOME
+from . import features
+
+if TYPE_CHECKING:  # onnxruntime and the store are runtime imports deferred below; only their types are needed here
+    import onnxruntime
+
+    from ..mind.store import Store, Track
 
 MODEL_TAG = "clap-htsat-unfused-onnx"
-MODEL_FILES = ("clap-audio.onnx", "clap-mel.npy")
-# TODO: point at the GitHub release asset once the repo is public.
+ONNX_FILE = "clap-audio.onnx"
+MEL_FILE = "clap-mel.npy"
+MODEL_FILES = (ONNX_FILE, MEL_FILE)
+# The `models-v1` release of the repo; downloadable without auth once the repo is public.
 MODEL_URL = "https://github.com/ykumards/spot-kick/releases/download/models-v1/"
-DEFAULT_DIR = Path.home() / ".spotkick" / "models"
+DEFAULT_DIR = HOME / "models"
+DEFAULT_PROVIDERS = ["CPUExecutionProvider"]
+DOWNLOAD_CHUNK_BYTES = 1 << 20
+DOWNLOAD_TIMEOUT_S = 60
+PREVIEW_TIMEOUT_S = 30
+ONNX_INPUT_NAME = "input_features"
 
 
-def normalize(v: np.ndarray) -> np.ndarray:
-    n = np.linalg.norm(v)
-    return v / n if n > 0 else v
+def normalize(vector: np.ndarray) -> np.ndarray:
+    """Scale to unit length; the zero vector is returned untouched."""
+    length = np.linalg.norm(vector)
+    if length > 0:
+        return vector / length
+    return vector
 
 
 def model_present(model_dir: Path = DEFAULT_DIR) -> bool:
-    return all((model_dir / f).exists() for f in MODEL_FILES)
+    return all((model_dir / filename).exists() for filename in MODEL_FILES)
 
 
-def ensure_model(model_dir: Path = DEFAULT_DIR, log=lambda m: None) -> Path:
+def download_file(url: str, destination: Path) -> None:
+    """Stream `url` into `destination` via a `.part` file, so a killed download never leaves a truncated model."""
+    import requests  # deferred: only needed on first run, keeps app startup fast
+
+    partial = destination.with_suffix(destination.suffix + ".part")
+    with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT_S) as response:
+        response.raise_for_status()
+        with partial.open("wb") as handle:
+            for chunk in response.iter_content(DOWNLOAD_CHUNK_BYTES):
+                handle.write(chunk)
+        partial.rename(destination)
+
+
+def ensure_model(model_dir: Path = DEFAULT_DIR, log: Callable[[str], None] = lambda message: None) -> Path:
+    """Download whichever model files are missing from `model_dir`. Returns the directory."""
     model_dir.mkdir(parents=True, exist_ok=True)
-    for f in MODEL_FILES:
-        p = model_dir / f
-        if p.exists():
+    for filename in MODEL_FILES:
+        destination = model_dir / filename
+        if destination.exists():
             continue
-        import requests
-        log(f"downloading {f}…")
-        with requests.get(MODEL_URL + f, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            tmp = p.with_suffix(p.suffix + ".part")
-            with tmp.open("wb") as fh:
-                for chunk in r.iter_content(1 << 20):
-                    fh.write(chunk)
-            tmp.rename(p)
+        log(f"downloading {filename}…")
+        download_file(MODEL_URL + filename, destination)
     return model_dir
 
 
 class Embedder:
-    def __init__(self, model_dir: Path = DEFAULT_DIR, *, n_clips: int = 3, providers: list[str] | None = None):
-        self.model_dir, self.n_clips = Path(model_dir), n_clips
-        self.providers = providers or ["CPUExecutionProvider"]
-        self._sess = self._mel = None
+    """Lazily loads the ONNX audio tower; nothing heavy happens until the first `embed_audio`."""
 
-    def _load(self):
-        if self._sess is None:
-            import onnxruntime as ort
-            ensure_model(self.model_dir)
-            self._mel = np.load(self.model_dir / "clap-mel.npy")
-            self._sess = ort.InferenceSession(str(self.model_dir / "clap-audio.onnx"), providers=self.providers)
-        return self._sess, self._mel
+    def __init__(
+        self,
+        model_dir: Path = DEFAULT_DIR,
+        *,
+        n_clips: int = features.DEFAULT_N_CLIPS,
+        providers: list[str] | None = None,
+    ):
+        self.model_dir = Path(model_dir)
+        self.n_clips = n_clips
+        self.providers = providers or DEFAULT_PROVIDERS
+        self._session: onnxruntime.InferenceSession | None = None
+        self._mel_filters: np.ndarray | None = None
+
+    def _load(self) -> tuple[onnxruntime.InferenceSession, np.ndarray]:
+        if self._session is not None and self._mel_filters is not None:
+            return self._session, self._mel_filters
+        import onnxruntime  # deferred: importing onnxruntime costs real startup time
+
+        ensure_model(self.model_dir)
+        mel_filters = np.load(self.model_dir / MEL_FILE)
+        session = onnxruntime.InferenceSession(str(self.model_dir / ONNX_FILE), providers=self.providers)
+        self._mel_filters = mel_filters
+        self._session = session
+        return session, mel_filters
 
     @property
     def loaded(self) -> bool:
-        return self._sess is not None
+        return self._session is not None
 
     def embed_audio(self, wave: np.ndarray) -> np.ndarray:
         """Mono float32 at 48 kHz → unit vector (512). Mean of up to `n_clips` deterministic 10 s crops."""
-        sess, mel = self._load()
-        x = F.input_features(wave, mel, self.n_clips)
-        out = sess.run(None, {"input_features": x})[0]                    # (clips, 512), un-normalized
-        out = out / np.linalg.norm(out, axis=1, keepdims=True)
-        return normalize(out.mean(axis=0).astype(np.float32))
+        session, mel_filters = self._load()
+        model_input = features.input_features(wave, mel_filters, self.n_clips)
+        per_clip = np.asarray(session.run(None, {ONNX_INPUT_NAME: model_input})[0], dtype=np.float32)
+        per_clip = per_clip / np.linalg.norm(per_clip, axis=1, keepdims=True)
+        return normalize(per_clip.mean(axis=0).astype(np.float32))
 
     def embed_url(self, preview_url: str) -> np.ndarray:
-        import requests
-        raw = requests.get(preview_url, timeout=30).content
+        import requests  # deferred: keeps the module importable without network deps at startup
+
+        raw = requests.get(preview_url, timeout=PREVIEW_TIMEOUT_S).content
         return self.embed_audio(decode(raw))
 
 
+WAV_HEADER_BYTES = 44
+AFCONVERT_TIMEOUT_S = 60
+
+
 def decode(raw: bytes) -> np.ndarray:
-    """m4a bytes → mono float32 at 48 kHz, via ffmpeg (Homebrew)."""
-    with tempfile.TemporaryDirectory() as d:
-        src = Path(d) / "preview.m4a"
-        src.write_bytes(raw)
-        out = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(src), "-ac", "1", "-ar", str(F.SR), "-f", "f32le", "-"],
-                             capture_output=True, check=True)
-    return np.frombuffer(out.stdout, dtype=np.float32).copy()
+    """m4a bytes → mono float32 at 48 kHz, via macOS's `afconvert` (ships with the system).
+
+    Channels are mixed here, not by afconvert: its `-c 1` sums them, ffmpeg's `-ac 1` (which every stored embedding
+    and the reference implementation used) mixes stereo as (L + R) / √2, and CLAP is not level-invariant, so the
+    same convention is kept to the bit."""
+    with tempfile.TemporaryDirectory() as scratch_dir:
+        source = Path(scratch_dir) / "preview.m4a"
+        target = Path(scratch_dir) / "preview.wav"
+        source.write_bytes(raw)
+        command = ["afconvert", "-f", "WAVE", "-d", f"LEF32@{features.SR}", str(source), str(target)]
+        subprocess.run(command, capture_output=True, check=True, timeout=AFCONVERT_TIMEOUT_S)
+        channels, samples = wav_samples(target.read_bytes())
+    if channels == 1:
+        return samples
+    return (samples.reshape(-1, channels).sum(axis=1) / np.sqrt(channels)).astype(np.float32)
 
 
-def embed_track(store, embedder: Embedder, track) -> np.ndarray | None:
+def wav_samples(wav: bytes) -> tuple[int, np.ndarray]:
+    """(channel count, interleaved float32 samples) of a WAVE file, found by walking the RIFF chunks."""
+    channels = 1
+    offset = 12
+    while offset + 8 <= len(wav):
+        chunk_id = wav[offset:offset + 4]
+        chunk_size = int.from_bytes(wav[offset + 4:offset + 8], "little")
+        if chunk_id == b"fmt ":
+            channels = int.from_bytes(wav[offset + 10:offset + 12], "little")
+        elif chunk_id == b"data":
+            return channels, np.frombuffer(wav[offset + 8:offset + 8 + chunk_size], dtype="<f4").copy()
+        offset += 8 + chunk_size + (chunk_size % 2)
+    raise ValueError("no data chunk in the decoded audio")
+
+
+def embed_track(store: Store, embedder: Embedder, track: Track) -> np.ndarray | None:
     """Vector for a store Track: cached in `embeddings`, else download the preview, embed, cache. None if no preview."""
-    v = store.embedding(track.id)
-    if v is not None:
-        return v
+    cached = store.embedding(track.id)
+    if cached is not None:
+        return cached
     if not track.preview_url:
         return None
-    v = embedder.embed_url(track.preview_url)
-    store.put_embedding(track.id, v, MODEL_TAG)
-    return v
+    vector = embedder.embed_url(track.preview_url)
+    store.put_embedding(track.id, vector, MODEL_TAG)
+    return vector

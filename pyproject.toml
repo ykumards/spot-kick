@@ -9,13 +9,16 @@ dependencies = [
   "numpy>=1.26",
   "requests>=2.31",
   "onnxruntime>=1.18",
+  # The menubar app. Markers keep `uv tool install` working on the platform the app runs on without pretending
+  # the package is portable: everything else is AppleScript, Keychain and afconvert anyway.
+  "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
+  "pyobjc-framework-WebKit>=10; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
 export = ["torch>=2.2", "transformers>=4.40", "onnx>=1.16"]   # dev only: scripts/export_clap_onnx.py
-app = ["pyobjc-framework-Cocoa>=10", "pyobjc-framework-WebKit>=10"]
-openai = ["openai>=1.30"]
-dev = ["pytest>=8", "ruff>=0.5"]
+app = []                                                       # kept so `pip install -e ".[app]"` keeps working
+dev = ["pytest>=8", "ruff>=0.5", "basedpyright"]
 
 [project.scripts]
 spotkick = "spotkick.__main__:main"
@@ -27,9 +30,23 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["spotkick*"]
 
+[tool.setuptools.package-data]
+"spotkick.app" = ["ui/*.html", "ui/*.png"]
+
 [tool.ruff]
-line-length = 140
+line-length = 120
 target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.basedpyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
+include = ["spotkick", "tests", "scripts"]
+extraPaths = ["scripts"]          # tests import the fixture exporter, which lives outside the package

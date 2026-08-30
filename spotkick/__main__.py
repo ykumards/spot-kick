@@ -1,4 +1,4 @@
-"""`spotkick` — the menubar leg. `spotkick kick boot` — the same kick from the terminal, fully logged.
+"""Command-line entry point.
 
     spotkick                       menubar app (needs the app extra)
     spotkick kick <tap|kick|boot|0.0-1.0> [--dig N] [--wait N | --no-wait]
@@ -6,7 +6,7 @@
     spotkick status                what the store knows
     spotkick prompt                print the Brain's context as it would be sent (nothing is sent)
     spotkick forget                delete the database
-    spotkick control SEED KICK     the no-kick control: same seed with and without the kick, Spotify muted, both logged
+    spotkick connect <client-id>   store your Spotify app's credentials (the secret is prompted, kept in the Keychain)
 """
 from __future__ import annotations
 
@@ -14,142 +14,194 @@ import argparse
 import sys
 import time
 
-from . import config as C
+from . import config
+
+STRENGTH_MAGNITUDE = {"tap": 0.165, "kick": 0.5, "boot": 0.83}
+POLL_INTERVAL_S = 2.5
 
 
-def _session(cfg, log=print):
+def build_session(cfg: config.Config, log=print):
+    """Wire the store, the LLM backend and the kick session together.
+
+    Imports are local so `spotkick status` does not pay for onnxruntime.
+    """
     from .brain.llm import make_backend
-    from .brain.spotify_api import SpotifySearch
     from .kick.session import KickSession
     from .mind.store import Store
+
     store = Store(cfg.db_path)
-    backend = make_backend(cfg)
-    api = SpotifySearch()
-    searcher = api if api.configured else getattr(backend, "search_uri", None)
-    if api.configured:
-        log("resolver: Spotify Web API")
-    return KickSession(cfg, store, backend, searcher=searcher, log=log)
+    return KickSession(cfg, store, make_backend(cfg), log=log)
 
 
-def _magnitude(s: str) -> float:
-    if s in ("tap", "kick", "boot"):
-        return {"tap": 0.165, "kick": 0.5, "boot": 0.83}[s]
-    m = float(s)
-    if not 0 <= m <= 1:
+def parse_magnitude(text: str) -> float:
+    """A strength name or a number in 0..1."""
+    if text in STRENGTH_MAGNITUDE:
+        return STRENGTH_MAGNITUDE[text]
+    magnitude = float(text)
+    if not 0 <= magnitude <= 1:
         raise argparse.ArgumentTypeError("magnitude is 0..1 or tap|kick|boot")
-    return m
+    return magnitude
 
 
-def cmd_kick(a):
-    cfg = C.load()
-    if a.dig is not None:
-        cfg.dig = a.dig
-    sess = _session(cfg)
-    obs = sess.observe()
-    t = obs.get("track")
-    if t is None:
-        print("Spotify isn't playing anything; start a song first.", file=sys.stderr); return 2
-    print(f"now: {t.label} · state from {obs['state']['n']} plays · typical step {obs['state']['typical_step']:.3f}")
-    t0 = time.time()
-    n = sess.wait_for_pool()
-    print(f"{n} candidates ready in {time.time() - t0:.0f}s")
-    out = sess.kick(a.magnitude)
-    print(f"\n{out['strength'].upper()} → {out['track'].label}\n  {out['direction']} — {out['why']}")
-    print(f"  measured {out['distance']:.3f} · rel {out['rel']:.2f} (target {out['target_rel']:.2f}) · band {out['band']} · dose {out['dose']}")
-    print("\ncandidates measured:")
-    for c in sorted(out["candidates"], key=lambda c: c["rel"]):
-        print(f"  {'▶' if c['chosen'] else ' '} {c['rel']:5.2f} {c['band']:4} {c['reach']:8} {c['artist']} — {c['title']}")
-    if a.no_wait:
-        return 0
-    print(f"\nwatching (follow-through {out['dose'] - 1}, then {a.wait} Spotify songs) — Ctrl-C to stop")
-    return _watch(sess, until_since=a.wait)
+def watch(session, *, stop_after_songs: int | None = None) -> int:
+    """Print what Spotify plays and how the active kick is judged.
 
-
-def _watch(sess, until_since: int | None = None):
-    last = None
+    Runs until Ctrl-C, or until `stop_after_songs` songs have followed the kick.
+    """
+    previous_line = None
     try:
         while True:
-            obs = sess.observe()
-            t, k = obs.get("track"), obs.get("kick")
-            line = (t.label if t else "nothing playing") + (f"  · since kick: {k['n_since']} · followed {k['followed']:.2f} → {k['verdict']}" if k else "") \
-                + f"  · pool {obs['pool']['ready']}{'…' if obs['pool']['building'] else ''}"
-            if line != last:
-                print(time.strftime("%H:%M:%S"), line, flush=True); last = line
-            if until_since and k and k["n_since"] >= until_since and not k["forced_left"]:
+            observation = session.observe()
+            track = observation.get("track")
+            kick = observation.get("kick")
+            pool = observation["pool"]
+
+            line = track.label if track else "nothing playing"
+            if kick:
+                line += f"  · since kick: {kick['n_since']} · followed {kick['followed']:.2f} → {kick['verdict']}"
+            line += f"  · pool {pool['ready']}"
+            if pool["building"]:
+                line += "…"
+
+            if line != previous_line:
+                print(time.strftime("%H:%M:%S"), line, flush=True)
+                previous_line = line
+            if stop_after_songs and kick and kick["n_since"] >= stop_after_songs:
                 return 0
-            time.sleep(2.5)
+            time.sleep(POLL_INTERVAL_S)
     except KeyboardInterrupt:
         return 0
 
 
-def cmd_watch(a):
-    return _watch(_session(C.load()))
+def cmd_kick(args: argparse.Namespace) -> int:
+    cfg = config.load()
+    if args.dig is not None:
+        cfg.dig = args.dig
+    session = build_session(cfg)
+
+    observation = session.observe()
+    track = observation.get("track")
+    if track is None:
+        print("Spotify isn't playing anything; start a song first.", file=sys.stderr)
+        return 2
+    state = observation["state"]
+    print(f"now: {track.label} · state from {state['n']} plays · typical step {state['typical_step']:.3f}")
+
+    started = time.time()
+    ready = session.wait_for_pool()
+    print(f"{ready} candidates ready in {time.time() - started:.0f}s")
+
+    result = session.kick(args.magnitude)
+    print(f"\n{result['strength'].upper()} → {result['track'].label}")
+    print(f"  {result['direction']} — {result['why']}")
+    measured = f"measured {result['distance']:.3f} · rel {result['rel']:.2f} (target {result['target_rel']:.2f})"
+    print(f"  {measured} · band {result['band']}")
+    print("\ncandidates measured:")
+    for candidate in sorted(result["candidates"], key=lambda c: c["rel"]):
+        marker = "▶" if candidate["chosen"] else " "
+        name = f"{candidate['artist']} — {candidate['title']}"
+        print(f"  {marker} {candidate['rel']:5.2f} {candidate['band']:4} {candidate['reach']:8} {name}")
+
+    if args.no_wait:
+        return 0
+    print(f"\nwatching the next {args.wait} Spotify songs — Ctrl-C to stop")
+    return watch(session, stop_after_songs=args.wait)
 
 
-def cmd_status(a):
+def cmd_watch(args: argparse.Namespace) -> int:
+    return watch(build_session(config.load()))
+
+
+def cmd_status(args: argparse.Namespace) -> int:
     from .mind.store import Store
-    cfg = C.load(); s = Store(cfg.db_path)
-    print(f"db: {cfg.db_path}\n{s.counts()}")
-    for r in s.recent(8):
-        print(f"  {r['kind']:7} {r['source']:8} {r['artist']} — {r['title']}")
-    k = s.last_kick()
-    if k:
-        t = s.track(k["track_id"])
-        print(f"last kick: {k['strength']} → {t.label if t else '?'} · rel {k['rel']:.2f} · {k['verdict'] or 'listening'} after {k['n_since']}")
+
+    cfg = config.load()
+    store = Store(cfg.db_path)
+    print(f"db: {cfg.db_path}\n{store.counts()}")
+    for event in store.recent(8):
+        print(f"  {event['kind']:7} {event['source']:8} {event['artist']} — {event['title']}")
+
+    kick = store.last_kick()
+    if kick:
+        track = store.track(kick["track_id"])
+        label = track.label if track else "?"
+        verdict = kick["verdict"] or "listening"
+        print(f"last kick: {kick['strength']} → {label} · rel {kick['rel']:.2f} · {verdict} after {kick['n_since']}")
     return 0
 
 
-def cmd_prompt(a):
+def cmd_prompt(args: argparse.Namespace) -> int:
     from .brain.prompts import Context, candidates_prompt
     from .mind.store import Store
-    cfg = C.load()
-    print(candidates_prompt(Context.from_store(Store(cfg.db_path)), n=cfg.n_candidates, dig=cfg.dig))
+
+    cfg = config.load()
+    context = Context.from_store(Store(cfg.db_path))
+    print(candidates_prompt(context, n=cfg.n_candidates, dig=cfg.dig))
     return 0
 
 
-def cmd_forget(a):
-    cfg = C.load()
-    for p in (cfg.db_path, cfg.db_path.with_name(cfg.db_path.name + "-wal"), cfg.db_path.with_name(cfg.db_path.name + "-shm")):
-        if p.exists():
-            p.unlink()
-    print(f"forgot {cfg.db_path}")
+def cmd_forget(args: argparse.Namespace) -> int:
+    cfg = config.load()
+    db = cfg.db_path
+    for path in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+        if path.exists():
+            path.unlink()
+    print(f"forgot {db}")
     return 0
 
 
-def cmd_control(a):
-    import json
+def cmd_connect(args: argparse.Namespace) -> int:
+    """Prove the developer's Spotify app credentials work, then keep them: id in config.toml, secret in the Keychain."""
+    import getpass
 
-    from .ears import clap
-    from .kick import control
-    from .mind.store import Store
-    cfg = C.load()
-    r = control.run(Store(cfg.db_path), clap.Embedder(), a.seed, a.kick, n=a.n, skip_after=a.skip_after)
-    print(json.dumps(r, indent=2))
+    from .player.spotify_api import SpotifyAPIError, save_credentials
+
+    secret = getpass.getpass("client secret (not echoed): ")
+    try:
+        save_credentials(args.client_id, secret)
+    except SpotifyAPIError as error:
+        print(error, file=sys.stderr)
+        return 2
+    print("connected — lookups will use your Spotify app")
     return 0
 
 
-def cmd_app(a):
-    from .app.menubar import main as app_main
-    return app_main()
+def cmd_app(args: argparse.Namespace) -> int:
+    from .app.menubar import main as run_app
+
+    return run_app()
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog="spotkick", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = ap.add_subparsers(dest="cmd")
-    k = sub.add_parser("kick"); k.add_argument("magnitude", type=_magnitude); k.add_argument("--dig", type=int, choices=(0, 1, 2))
-    k.add_argument("--wait", type=int, default=2, metavar="N", help="keep watching until N Spotify songs have followed (default 2)")
-    k.add_argument("--no-wait", action="store_true", help="exit right after the kick (no follow-through, no verdict)"); k.set_defaults(fn=cmd_kick)
-    sub.add_parser("watch").set_defaults(fn=cmd_watch)
-    sub.add_parser("status").set_defaults(fn=cmd_status)
-    sub.add_parser("prompt").set_defaults(fn=cmd_prompt)
-    sub.add_parser("forget").set_defaults(fn=cmd_forget)
-    c = sub.add_parser("control"); c.add_argument("seed"); c.add_argument("kick"); c.add_argument("-n", type=int, default=6)
-    c.add_argument("--skip-after", type=float, metavar="S", help="skip each song after S seconds (faster, but skips are a signal too)")
-    c.set_defaults(fn=cmd_control)
-    a = ap.parse_args(argv)
-    if a.cmd is None:
-        return cmd_app(a)
-    return a.fn(a)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="spotkick", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    commands = parser.add_subparsers(dest="command")
+
+    kick = commands.add_parser("kick", help="kick the queue a measured distance")
+    kick.add_argument("magnitude", type=parse_magnitude, help="tap | kick | boot, or a number in 0..1")
+    kick.add_argument("--dig", type=int, choices=(0, 1, 2), help="how far off the beaten path the brain should look")
+    kick.add_argument(
+        "--wait", type=int, default=2, metavar="N", help="keep watching until N Spotify songs have followed (default 2)"
+    )
+    kick.add_argument("--no-wait", action="store_true", help="exit right after the kick without observing a verdict")
+    kick.set_defaults(run=cmd_kick)
+
+    commands.add_parser("watch", help="observe Spotify and keep the pool warm").set_defaults(run=cmd_watch)
+    commands.add_parser("status", help="what the store knows").set_defaults(run=cmd_status)
+    commands.add_parser("prompt", help="print the brain's prompt without sending it").set_defaults(run=cmd_prompt)
+    commands.add_parser("forget", help="delete the database").set_defaults(run=cmd_forget)
+    connect = commands.add_parser("connect", help="store your Spotify app's client id and secret")
+    connect.add_argument("client_id", help="the client id from developer.spotify.com/dashboard")
+    connect.set_defaults(run=cmd_connect)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.command is None:
+        return cmd_app(args)
+    return args.run(args)
 
 
 if __name__ == "__main__":

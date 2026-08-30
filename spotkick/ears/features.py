@@ -14,38 +14,43 @@ HOP = 480
 N_MELS = 64
 CLIP_S = 10
 CLIP = SR * CLIP_S
+POWER_FLOOR = 1e-10
+DEFAULT_N_CLIPS = 3
 
 
-def hann_periodic(n: int) -> np.ndarray:
-    return 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / n)
+def hann_periodic(length: int) -> np.ndarray:
+    """The periodic Hann window transformers uses (denominator `length`, not `length - 1`)."""
+    return 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(length) / length)
 
 
 def log_mel(wave: np.ndarray, mel_filters: np.ndarray) -> np.ndarray:
     """(samples,) float32 → (frames, 64) float32 log-mel, transformers conventions."""
-    x = np.asarray(wave, dtype=np.float64)
-    x = np.pad(x, N_FFT // 2, mode="reflect")
-    n_frames = 1 + (len(x) - N_FFT) // HOP
-    idx = np.arange(N_FFT)[None, :] + HOP * np.arange(n_frames)[:, None]
-    frames = x[idx] * hann_periodic(N_FFT)[None, :]
-    power = np.abs(np.fft.rfft(frames, axis=1)) ** 2          # (frames, 513)
-    mel = power @ mel_filters                                # (frames, 64)
-    return (10.0 * np.log10(np.maximum(mel, 1e-10))).astype(np.float32)
+    samples = np.asarray(wave, dtype=np.float64)
+    samples = np.pad(samples, N_FFT // 2, mode="reflect")
+    n_frames = 1 + (len(samples) - N_FFT) // HOP
+    frame_indices = np.arange(N_FFT)[None, :] + HOP * np.arange(n_frames)[:, None]
+    frames = samples[frame_indices] * hann_periodic(N_FFT)[None, :]
+    power = np.abs(np.fft.rfft(frames, axis=1)) ** 2
+    mel = power @ mel_filters
+    return (10.0 * np.log10(np.maximum(mel, POWER_FLOOR))).astype(np.float32)
 
 
-def clips(wave: np.ndarray, n: int = 3) -> list[np.ndarray]:
+def clips(wave: np.ndarray, n: int = DEFAULT_N_CLIPS) -> list[np.ndarray]:
     """Deterministic 10 s crops: start / middle / end of the preview (the reference extractor takes a *random* crop,
     which made the old embeddings nondeterministic). Short audio is repeat-padded like the reference does."""
-    w = np.asarray(wave, dtype=np.float32)
-    if len(w) < CLIP:
-        reps = int(np.ceil(CLIP / max(len(w), 1)))
-        w = np.tile(w, reps)[:CLIP]
-        return [w]
-    if len(w) == CLIP or n == 1:
-        return [w[(len(w) - CLIP) // 2:][:CLIP]]
-    starts = np.linspace(0, len(w) - CLIP, n).astype(int)
-    return [w[s:s + CLIP] for s in starts]
+    samples = np.asarray(wave, dtype=np.float32)
+    if len(samples) < CLIP:
+        repeats = int(np.ceil(CLIP / max(len(samples), 1)))
+        padded = np.tile(samples, repeats)[:CLIP]
+        return [padded]
+    if len(samples) == CLIP or n == 1:
+        middle_start = (len(samples) - CLIP) // 2
+        return [samples[middle_start:][:CLIP]]
+    starts = np.linspace(0, len(samples) - CLIP, n).astype(int)
+    return [samples[start:start + CLIP] for start in starts]
 
 
-def input_features(wave: np.ndarray, mel_filters: np.ndarray, n_clips: int = 3) -> np.ndarray:
+def input_features(wave: np.ndarray, mel_filters: np.ndarray, n_clips: int = DEFAULT_N_CLIPS) -> np.ndarray:
     """(n_clips, 1, 1001, 64) ready for the ONNX audio tower."""
-    return np.stack([log_mel(c, mel_filters)[None] for c in clips(wave, n_clips)]).astype(np.float32)
+    per_clip = [log_mel(clip, mel_filters)[None] for clip in clips(wave, n_clips)]
+    return np.stack(per_clip).astype(np.float32)

@@ -1,0 +1,58 @@
+{
+  "recent": [
+    {
+      "artist": "Can",
+      "title": "Vitamin C",
+      "source": "spotify",
+      "kind": "partial"
+    },
+    {
+      "artist": "Alice Coltrane",
+      "title": "Journey in Satchidananda",
+      "source": "spotify",
+      "kind": "play"
+    },
+    {
+      "artist": "The Durutti Column",
+      "title": "Sketch for Summer",
+      "source": "spotify",
+      "kind": "skip"
+    },
+    {
+      "artist": "Milton Nascimento",
+      "title": "Clube da Esquina No 2",
+      "source": "spotify",
+      "kind": "play"
+    },
+    {
+      "artist": "Soft Machine",
+      "title": "Hazard Profile Pt.1",
+      "source": "spotify",
+      "kind": "play"
+    }
+  ],
+  "top_recent": [],
+  "top_all": [
+    {
+      "artist": "Alice Coltrane",
+      "count": 1
+    },
+    {
+      "artist": "Milton Nascimento",
+      "count": 1
+    },
+    {
+      "artist": "Soft Machine",
+      "count": 1
+    },
+    {
+      "artist": "Can",
+      "count": 0
+    }
+  ],
+  "loved": [],
+  "rejected": [],
+  "directions": [],
+  "kicked_artists": [],
+  "taste": []
+}
