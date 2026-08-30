@@ -4,7 +4,7 @@ import time
 import numpy as np
 import pytest
 
-from spotkick.mind.store import Store, track_key
+from spotkick.memory.store import Store, track_key
 
 URI = "spotify:track:0000000000000000000000"
 SECONDS_PER_DAY = 86400
@@ -39,27 +39,6 @@ def test_embedding_roundtrip(store):
     assert store.embedding(999) is None
 
 
-def test_sessions_and_positions(store):
-    first = store.upsert_track("A", "1")
-    second = store.upsert_track("B", "2")
-    third = store.upsert_track("C", "3")
-    start = 1_700_000_000.0
-    store.add_event("play", first.id, "spotify", t=start)
-    store.add_event("play", second.id, "spotify", t=start + 200)
-    store.add_event("play", third.id, "spotify", t=start + 3 * 3600)  # new session
-    plays = store.events(kinds=("play",))
-    assert [play["position_in_session"] for play in plays] == [0, 1, 0]
-    assert plays[0]["session_id"] == plays[1]["session_id"]
-    assert plays[1]["session_id"] != plays[2]["session_id"]
-    assert plays[1]["prev_track_id"] == first.id
-
-
-def test_ctx_json_roundtrip(store):
-    track = store.upsert_track("A", "1")
-    store.add_event("play", track.id, "spotify", ctx={"home_distance": 0.31, "knobs": {"home_pull": 1.0}})
-    assert store.events()[0]["ctx"]["knobs"]["home_pull"] == 1.0
-
-
 def test_seen_covers_plays_kicks_and_picks(store):
     played = store.upsert_track("Tinariwen", "Amassakoul")
     assert not store.seen("Tinariwen", "Amassakoul")
@@ -76,7 +55,6 @@ def test_seen_covers_plays_kicks_and_picks(store):
         distance=0.5,
         rel=1.2,
         band="boot",
-        dose=5,
         pre_state=np.zeros(4),
         kick_vec=np.ones(4),
     )
@@ -118,7 +96,6 @@ def test_context_queries(store):
         distance=0.4,
         rel=0.7,
         band="kick",
-        dose=3,
         pre_state=None,
         kick_vec=None,
         t=now - 50,
@@ -146,41 +123,34 @@ def test_candidates_lifecycle(store):
     candidate_ids = store.add_candidates("set-1", proposed)
     track = store.upsert_track("A", "1")
     store.update_candidate(candidate_ids[0], track_id=track.id, distance=0.2, rel=0.3, band="tap")
-    usable = store.latest_candidate_set()
+    usable = store.library_candidates()
     assert [candidate["artist"] for candidate in usable] == ["A"]  # B unresolved, C rejected
     store.update_candidate(candidate_ids[0], chosen=1)
-    assert store.latest_candidate_set() == []
+    assert store.library_candidates() == []
     assert len(store.candidate_set("set-1")) == 3
     assert store.counts()["candidates"] == 3
 
 
-def test_follow_through_sets_are_never_the_latest_pool(store):
-    pool_rows = [{"reach": "far", "direction": "d", "artist": "A", "title": "1", "why": ""}]
-    pool_ids = store.add_candidates("pool-1", pool_rows)
-    store.update_candidate(pool_ids[0], track_id=store.upsert_track("A", "1").id)
-    follow_rows = [{"reach": "adjacent", "direction": "d", "artist": "F", "title": "2", "why": ""}]
-    follow_ids = store.add_candidates("follow-1", follow_rows, purpose="follow")
-    store.update_candidate(follow_ids[0], track_id=store.upsert_track("F", "2").id)
-    # the newer follow set is not a pool
-    assert [candidate["artist"] for candidate in store.latest_candidate_set()] == ["A"]
-    assert [candidate["artist"] for candidate in store.latest_candidate_set(purpose="follow")] == ["F"]
-
-
-def test_migration_adds_purpose_and_tags_old_follow_sets(tmp_path):
+def test_migration_drops_dead_columns_and_tables_and_keeps_rows(tmp_path):
     path = tmp_path / "old.db"
     Store(str(path)).close()
     old_db = sqlite3.connect(path)
-    old_rows = (
-        "INSERT INTO candidates(t,set_id,for_track_id,reach,artist,title) VALUES (1,'f',NULL,'adjacent','X','1'),"
-        " (1,'f',NULL,'adjacent','Y','2'), (2,'p',NULL,'near','Z','3'), (2,'p',NULL,'far','W','4');"
+    old_db.executescript(
+        "ALTER TABLE kicks ADD COLUMN dose INTEGER NOT NULL DEFAULT 1;"
+        "ALTER TABLE candidates ADD COLUMN purpose TEXT NOT NULL DEFAULT 'pool';"
+        "ALTER TABLE candidates DROP COLUMN lean;"
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+        "INSERT INTO tracks(artist,title,key,created_at) VALUES ('A','1','a|1',1);"
+        "INSERT INTO candidates(t,set_id,artist,title,purpose) VALUES (1,'s','A','1','follow');"
     )
-    old_db.executescript("ALTER TABLE candidates DROP COLUMN purpose;" + old_rows)
     old_db.commit()
     old_db.close()
     migrated = Store(str(path))
-    purpose_rows = migrated._all("SELECT DISTINCT set_id, purpose FROM candidates")
-    purposes = {row["set_id"]: row["purpose"] for row in purpose_rows}
-    assert purposes == {"f": "follow", "p": "pool"}
+    assert "dose" not in migrated.columns("kicks")
+    assert "purpose" not in migrated.columns("candidates")
+    assert "lean" in migrated.columns("candidates")
+    assert migrated.count_rows("candidates") == 1
+    assert migrated._one("SELECT name FROM sqlite_master WHERE name='meta'") is None
 
 
 def test_persists_to_disk(tmp_path):
@@ -191,18 +161,13 @@ def test_persists_to_disk(tmp_path):
     writer.close()
     reader = Store(path)
     assert reader.counts() == {"tracks": 1, "embeddings": 0, "events": 1, "kicks": 0, "candidates": 0}
-    assert reader.get_config("nope", "dflt") == "dflt"
-    reader.set_config("llm_model", "qwen3")
-    assert reader.get_config("llm_model") == "qwen3"
-    reader.set_profile("home", b"\x00\x01")
-    assert reader.get_profile("home") == b"\x00\x01"
 
 
 def test_recent_kicks_and_spotify_play_count(store):
     kicked = store.upsert_track("Ed Motta", "Manuel")
     other = store.upsert_track("Azymuth", "Partido Alto")
     kick_id = store.add_kick(strength="boot", magnitude=0.9, target_rel=1.3, direction="brazilian soul", why="",
-                             track_id=kicked.id, distance=0.5, rel=1.2, band="boot", dose=1, pre_state=None,
+                             track_id=kicked.id, distance=0.5, rel=1.2, band="boot", pre_state=None,
                              kick_vec=None)
     store.add_event("play", kicked.id, "kick", kick_id=kick_id)          # the forced follow-through
     store.add_event("play", other.id, "spotify")

@@ -5,14 +5,13 @@ for wins; a hit for another song would put the wrong audio under the ruler, so n
 """
 from __future__ import annotations
 
-import re
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ..names import normalize_name
 from ..player.spotify_api import SpotifyAPI, SpotifyAPIError
 
-NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 HEAD_WORDS = 3
 
 Logger = Callable[[str], None]
@@ -26,7 +25,7 @@ def normalize(name: str) -> str:
     """Lower-case ASCII words: accents dropped, so Spotify's 'Nètsanèt' matches the brain's 'Netsanet'."""
     decomposed = unicodedata.normalize("NFKD", name)
     ascii_only = "".join(char for char in decomposed if not unicodedata.combining(char))
-    return NON_ALNUM_RE.sub(" ", ascii_only.lower()).strip()
+    return normalize_name(ascii_only)
 
 
 def names_match(want: str, got: str) -> bool:

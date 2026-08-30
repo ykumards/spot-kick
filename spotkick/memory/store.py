@@ -1,8 +1,8 @@
 """The only module that touches the database.
 
-One SQLite file holds everything Spot Kick knows about one listener: tracks, their audio embeddings,
-every signal (plays, skips, loves, kicks, picks) with the recommender's own view at that moment, every
-kick with its measured distance and verdict, and every candidate the Brain ever proposed. The Brain never
+One SQLite file holds everything Spot Kick knows about one listener: tracks, their audio embeddings, every
+signal (plays, skips, loves, kicks), every kick with its measured distance and verdict, and every candidate the
+Brain ever proposed. The Brain never
 reads this file directly; it gets the *context queries* at the bottom, each capped so the prompt stays
 ~20 lines no matter how long the history is. Dedup is done here, not by asking the model nicely.
 
@@ -10,8 +10,6 @@ One connection, many threads: every statement runs under one lock.
 """
 from __future__ import annotations
 
-import json
-import re
 import sqlite3
 import threading
 import time
@@ -21,14 +19,14 @@ from pathlib import Path
 
 import numpy as np
 
-SCHEMA = (
-    """
+from ..names import normalize_name
+
+SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracks (
   id INTEGER PRIMARY KEY,
   artist TEXT NOT NULL, title TEXT NOT NULL, album TEXT,
   key TEXT NOT NULL UNIQUE,                 -- normalized artist|title
-  spotify_uri TEXT UNIQUE, itunes_id INTEGER, preview_url TEXT, duration_s REAL,
-  resolved_how TEXT,                        -- memory | search | played | api
+  spotify_uri TEXT UNIQUE, preview_url TEXT, duration_s REAL,
   created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS embeddings (
@@ -38,13 +36,11 @@ CREATE TABLE IF NOT EXISTS embeddings (
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY,
   t REAL NOT NULL,
-  kind TEXT NOT NULL,                       -- play | partial | skip | love | unlove | hate | kick | pick
+  kind TEXT NOT NULL,                       -- play | partial | skip | love | unlove | kick
   track_id INTEGER REFERENCES tracks(id),
-  source TEXT NOT NULL,                     -- spotify | kick | minime | user
-  completion REAL, skip_at_s REAL,
-  hour INTEGER, weekday INTEGER, session_id INTEGER, position_in_session INTEGER, prev_track_id INTEGER,
-  kick_id INTEGER, pick_p REAL, pick_score REAL, popularity INTEGER,
-  ctx TEXT                                  -- JSON: the recommender's view at this moment
+  source TEXT NOT NULL,                     -- spotify | kick | user
+  completion REAL, skip_at_s REAL,          -- for a skip: how far in, and how far through, the listener left
+  kick_id INTEGER, popularity INTEGER
 );
 CREATE INDEX IF NOT EXISTS events_t ON events(t);
 CREATE INDEX IF NOT EXISTS events_track ON events(track_id, kind);
@@ -53,78 +49,67 @@ CREATE TABLE IF NOT EXISTS kicks (
   t REAL NOT NULL,
   strength TEXT NOT NULL, magnitude REAL NOT NULL, target_rel REAL,
   direction TEXT, why TEXT, track_id INTEGER REFERENCES tracks(id),
-  distance REAL, rel REAL, band TEXT, dose INTEGER NOT NULL DEFAULT 1, popularity INTEGER,
+  distance REAL, rel REAL, band TEXT, popularity INTEGER,
   pre_state BLOB, kick_vec BLOB,
   followed REAL, verdict TEXT, verdict_at REAL, n_since INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS candidates (
   id INTEGER PRIMARY KEY,
   t REAL NOT NULL,
-  set_id TEXT NOT NULL,                     -- one prefetch = one set
+  set_id TEXT NOT NULL,                     -- one brain call = one set
   for_track_id INTEGER,                     -- what was playing when the set was requested
-  purpose TEXT NOT NULL DEFAULT 'pool',     -- 'pool' (graded, for the next kick)"""
-    " or 'follow' (one direction, forced after a kick)\n"
-    """  kick_id INTEGER,                          -- filled when a set member is kicked
+  kick_id INTEGER,                          -- filled when a set member is kicked
   track_id INTEGER REFERENCES tracks(id),
-  reach TEXT, direction TEXT, artist TEXT NOT NULL, title TEXT NOT NULL, why TEXT, proposed_uri TEXT,
+  reach TEXT, direction TEXT, artist TEXT NOT NULL, title TEXT NOT NULL, why TEXT,
   distance REAL, rel REAL, band TEXT,       -- measured at selection time
-  home REAL, state REAL, affinity REAL, total REAL, p REAL,
   chosen INTEGER NOT NULL DEFAULT 0, rejected_reason TEXT,
   lean TEXT NOT NULL DEFAULT ''             -- the lean the set was asked under; the library only reuses a match
 );
 CREATE INDEX IF NOT EXISTS candidates_set ON candidates(set_id);
-CREATE TABLE IF NOT EXISTS profile (key TEXT PRIMARY KEY, value BLOB, updated_at REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
-)
 
-SCHEMA_VERSION = 1
-SESSION_GAP_S = 30 * 60
+# Columns and tables earlier versions wrote that nothing reads any more: dropped on open, so an old database
+# ends up with the schema above. (Track ids, keys and every measurement survive.)
+DROPPED_COLUMNS = {
+    "tracks": ("itunes_id", "resolved_how"),
+    "events": ("hour", "weekday", "session_id", "position_in_session", "prev_track_id", "pick_p", "pick_score",
+               "ctx"),
+    "kicks": ("dose",),
+    "candidates": ("purpose", "proposed_uri", "home", "state", "affinity", "total", "p"),
+}
+DROPPED_TABLES = ("profile", "config", "meta")
+
 SECONDS_PER_DAY = 86400
-PLAYS = ("play", "partial", "skip")
 PLAY_KINDS_SQL = "('play','partial','skip')"
 SEEN_KINDS_SQL = "('play','partial','skip','kick','pick')"
 
 KICK_UPDATABLE_FIELDS = {"followed", "verdict", "verdict_at", "n_since", "popularity"}
-CANDIDATE_UPDATABLE_FIELDS = {
-    "track_id", "distance", "rel", "band", "home", "state", "affinity", "total", "p", "chosen", "rejected_reason",
-    "kick_id",
-}
+CANDIDATE_UPDATABLE_FIELDS = {"track_id", "distance", "rel", "band", "chosen", "rejected_reason", "kick_id"}
 COUNTED_TABLES = ("tracks", "embeddings", "events", "kicks", "candidates")
 
 INSERT_TRACK_SQL = (
-    "INSERT INTO tracks(artist,title,album,key,spotify_uri,itunes_id,preview_url,duration_s,resolved_how,created_at)"
-    " VALUES (?,?,?,?,?,?,?,?,?,?)"
+    "INSERT INTO tracks(artist,title,album,key,spotify_uri,preview_url,duration_s,created_at) VALUES (?,?,?,?,?,?,?,?)"
 )
 INSERT_EMBEDDING_SQL = "INSERT OR REPLACE INTO embeddings(track_id, model, dim, vec, created_at) VALUES (?,?,?,?,?)"
 INSERT_EVENT_SQL = (
-    "INSERT INTO events(t,kind,track_id,source,completion,skip_at_s,hour,weekday,session_id,position_in_session,"
-    "prev_track_id,kick_id,pick_p,pick_score,popularity,ctx) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-)
-LAST_PLAY_SQL = (
-    f"SELECT t, session_id, position_in_session, track_id FROM events WHERE kind IN {PLAY_KINDS_SQL}"
-    " ORDER BY t DESC LIMIT 1"
+    "INSERT INTO events(t,kind,track_id,source,completion,skip_at_s,kick_id,popularity) VALUES (?,?,?,?,?,?,?,?)"
 )
 INSERT_KICK_SQL = (
-    "INSERT INTO kicks(t,strength,magnitude,target_rel,direction,why,track_id,distance,rel,band,dose,popularity,"
-    "pre_state,kick_vec) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "INSERT INTO kicks(t,strength,magnitude,target_rel,direction,why,track_id,distance,rel,band,popularity,"
+    "pre_state,kick_vec) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 PLAYS_AFTER_SQL = (
     "SELECT e.*, t.artist, t.title FROM events e JOIN tracks t ON t.id=e.track_id"
     f" WHERE e.t > ? AND e.kind IN {PLAY_KINDS_SQL} AND e.source='spotify' ORDER BY e.t"
 )
 INSERT_CANDIDATE_SQL = (
-    "INSERT INTO candidates(t,set_id,for_track_id,purpose,track_id,reach,direction,artist,title,why,proposed_uri,"
-    "rejected_reason,lean) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "INSERT INTO candidates(t,set_id,for_track_id,track_id,reach,direction,artist,title,why,rejected_reason,lean)"
+    " VALUES (?,?,?,?,?,?,?,?,?,?,?)"
 )
-LATEST_SET_ID_SQL = "SELECT set_id FROM candidates WHERE purpose=? ORDER BY t DESC, id DESC LIMIT 1"
-RECENT_POOL_ROWS_SQL = "SELECT * FROM candidates WHERE purpose='pool' AND t >= ? ORDER BY t, id"
-# The library: every pool candidate ever resolved and measured, whose track has never been played or kicked since,
+# The library: every candidate ever resolved and measured, whose track has never been played or kicked since,
 # newest first. Their embeddings are in the store, so a pool can be refilled from here without a brain call.
 LIBRARY_ROWS_SQL = (
-    "SELECT * FROM candidates WHERE purpose='pool' AND lean=? AND track_id IS NOT NULL AND rejected_reason IS NULL"
-    " AND chosen=0"
+    "SELECT * FROM candidates WHERE lean=? AND track_id IS NOT NULL AND rejected_reason IS NULL AND chosen=0"
     f" AND track_id NOT IN (SELECT track_id FROM events WHERE kind IN {SEEN_KINDS_SQL})"
     " AND track_id NOT IN (SELECT track_id FROM kicks)"
     " ORDER BY t DESC, id DESC"
@@ -159,24 +144,11 @@ RECENT_KICKS_SQL = (
     " ORDER BY k.t DESC LIMIT ?"
 )
 PLAY_COUNT_SQL = f"SELECT COUNT(*) AS n FROM events WHERE kind IN {PLAY_KINDS_SQL} AND source='spotify'"
-INSERT_SCHEMA_VERSION_SQL = "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)"
-
-# Migration: candidate sets written before the `purpose` column existed. A follow-through set was recognisable
-# as one with no originating track and every member at reach 'adjacent'.
-ADD_PURPOSE_COLUMN_SQL = "ALTER TABLE candidates ADD COLUMN purpose TEXT NOT NULL DEFAULT 'pool'"
 ADD_LEAN_COLUMN_SQL = "ALTER TABLE candidates ADD COLUMN lean TEXT NOT NULL DEFAULT ''"
-TAG_OLD_FOLLOW_SETS_SQL = (
-    "UPDATE candidates SET purpose='follow' WHERE for_track_id IS NULL AND set_id IN "
-    "(SELECT set_id FROM candidates GROUP BY set_id HAVING min(reach)='adjacent' AND max(reach)='adjacent')"
-)
-
-
-def _normalize(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
 def track_key(artist: str, title: str) -> str:
-    return f"{_normalize(artist)}|{_normalize(title)}"
+    return f"{normalize_name(artist)}|{normalize_name(title)}"
 
 
 @dataclass(frozen=True)
@@ -223,26 +195,8 @@ def kick_from_row(row: sqlite3.Row) -> dict:
     return kick
 
 
-def event_from_row(row: sqlite3.Row) -> dict:
-    event = dict(row)
-    if event["ctx"]:
-        event["ctx"] = json.loads(event["ctx"])
-    else:
-        event["ctx"] = None
-    return event
-
-
 def row_label(row: sqlite3.Row) -> str:
     return f"{row['artist']} — {row['title']}"
-
-
-def is_usable(candidate: dict) -> bool:
-    """Resolved to a track, not rejected, not already kicked."""
-    if candidate["track_id"] is None:
-        return False
-    if candidate["rejected_reason"]:
-        return False
-    return not candidate["chosen"]
 
 
 def placeholders(count: int) -> str:
@@ -271,16 +225,21 @@ class Store:
         with self._lock:
             self.db.executescript(SCHEMA)
             self.migrate()
-            self.db.execute(INSERT_SCHEMA_VERSION_SQL, (str(SCHEMA_VERSION),))
 
     def migrate(self) -> None:
-        """Additive changes for databases created by earlier versions."""
-        columns = {column["name"] for column in self.db.execute("PRAGMA table_info(candidates)")}
-        if "purpose" not in columns:
-            self.db.execute(ADD_PURPOSE_COLUMN_SQL)
-            self.db.execute(TAG_OLD_FOLLOW_SETS_SQL)
-        if "lean" not in columns:
+        """Bring a database from an earlier version up to SCHEMA: add what is missing, drop what is dead."""
+        if "lean" not in self.columns("candidates"):
             self.db.execute(ADD_LEAN_COLUMN_SQL)
+        for table, dead_columns in DROPPED_COLUMNS.items():
+            present = self.columns(table)
+            for column in dead_columns:
+                if column in present:
+                    self.db.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        for table in DROPPED_TABLES:
+            self.db.execute(f"DROP TABLE IF EXISTS {table}")
+
+    def columns(self, table: str) -> set[str]:
+        return {column["name"] for column in self.db.execute(f"PRAGMA table_info({table})")}
 
     def close(self) -> None:
         with self._lock:
@@ -322,10 +281,8 @@ class Store:
         *,
         album: str | None = None,
         spotify_uri: str | None = None,
-        itunes_id: int | None = None,
         preview_url: str | None = None,
         duration_s: float | None = None,
-        resolved_how: str | None = None,
     ) -> Track:
         """Insert or enrich. Identity is the normalized artist|title; a URI is attached when we learn it."""
         key = track_key(artist, title)
@@ -334,19 +291,14 @@ class Store:
             if row is None and spotify_uri:
                 row = self._one("SELECT * FROM tracks WHERE spotify_uri=?", (spotify_uri,))
             if row is None:
-                values = (
-                    artist, title, album, key, spotify_uri, itunes_id, preview_url, duration_s, resolved_how,
-                    time.time(),
-                )
+                values = (artist, title, album, key, spotify_uri, preview_url, duration_s, time.time())
                 track_id = self._insert(INSERT_TRACK_SQL, values)
                 return track_from_row(self._row("SELECT * FROM tracks WHERE id=?", (track_id,)))
             fresh = {
                 "album": album,
                 "spotify_uri": spotify_uri,
-                "itunes_id": itunes_id,
                 "preview_url": preview_url,
                 "duration_s": duration_s,
-                "resolved_how": resolved_how,
             }
             # Only fill columns that are still empty: the first value we learned wins.
             updates = {column: value for column, value in fresh.items() if value is not None and row[column] is None}
@@ -402,46 +354,10 @@ class Store:
         completion: float | None = None,
         skip_at_s: float | None = None,
         kick_id: int | None = None,
-        pick_p: float | None = None,
-        pick_score: float | None = None,
         popularity: int | None = None,
-        ctx: dict | None = None,
     ) -> int:
-        event_time = t or time.time()
-        local_time = time.localtime(event_time)
-        if ctx is None:
-            ctx_json = None
-        else:
-            ctx_json = json.dumps(ctx)
-        with self._lock:
-            last_play = self._one(LAST_PLAY_SQL)
-            session_id, position, previous_track_id = self.place_in_session(last_play, event_time)
-            if kind not in PLAYS:
-                # Only plays advance the session; loves, kicks and picks sit outside it.
-                session_id = None
-                position = None
-            values = (
-                event_time, kind, track_id, source, completion, skip_at_s, local_time.tm_hour, local_time.tm_wday,
-                session_id, position, previous_track_id, kick_id, pick_p, pick_score, popularity, ctx_json,
-            )
-            return self._insert(INSERT_EVENT_SQL, values)
-
-    def place_in_session(self, last_play: sqlite3.Row | None, event_time: float) -> tuple[int, int, int | None]:
-        """Session id, position within it and the previous track for an event at `event_time`.
-
-        A session is a run of plays with no gap longer than SESSION_GAP_S; its id is the timestamp of its first play.
-        """
-        if last_play is None or event_time - last_play["t"] > SESSION_GAP_S:
-            session_id = int(event_time)
-            position = 0
-        else:
-            session_id = last_play["session_id"]
-            position = (last_play["position_in_session"] or 0) + 1
-        if last_play is None:
-            previous_track_id = None
-        else:
-            previous_track_id = last_play["track_id"]
-        return session_id, position, previous_track_id
+        values = (t or time.time(), kind, track_id, source, completion, skip_at_s, kick_id, popularity)
+        return self._insert(INSERT_EVENT_SQL, values)
 
     def events(
         self, *, kinds: tuple[str, ...] | None = None, since: float | None = None, limit: int | None = None
@@ -461,7 +377,7 @@ class Store:
         if limit:
             sql += " LIMIT ?"
             args.append(limit)
-        return [event_from_row(row) for row in self._all(sql, args)]
+        return [dict(row) for row in self._all(sql, args)]
 
     # ------------------------------------------------------------------- kicks
     def add_kick(
@@ -476,14 +392,13 @@ class Store:
         distance: float | None,
         rel: float | None,
         band: str | None,
-        dose: int,
         pre_state: np.ndarray | None,
         kick_vec: np.ndarray | None,
         popularity: int | None = None,
         t: float | None = None,
     ) -> int:
         values = (
-            t or time.time(), strength, magnitude, target_rel, direction, why, track_id, distance, rel, band, dose,
+            t or time.time(), strength, magnitude, target_rel, direction, why, track_id, distance, rel, band,
             popularity, vector_to_blob(pre_state), vector_to_blob(kick_vec),
         )
         return self._insert(INSERT_KICK_SQL, values)
@@ -518,7 +433,6 @@ class Store:
         rows: list[dict],
         *,
         for_track_id: int | None = None,
-        purpose: str = "pool",
         t: float | None = None,
         lean: str = "",
     ) -> list[int]:
@@ -527,9 +441,9 @@ class Store:
         with self._lock:
             for candidate in rows:
                 values = (
-                    proposed_at, set_id, for_track_id, purpose, candidate.get("track_id"), candidate.get("reach"),
+                    proposed_at, set_id, for_track_id, candidate.get("track_id"), candidate.get("reach"),
                     candidate.get("direction"), candidate["artist"], candidate["title"], candidate.get("why"),
-                    candidate.get("spotify_uri"), candidate.get("rejected_reason"), lean,
+                    candidate.get("rejected_reason"), lean,
                 )
                 candidate_ids.append(self._insert(INSERT_CANDIDATE_SQL, values))
         return candidate_ids
@@ -548,26 +462,9 @@ class Store:
         rows = self._all("SELECT * FROM candidates WHERE set_id=? ORDER BY id", (set_id,))
         return [dict(row) for row in rows]
 
-    def latest_candidate_set(self, *, usable_only: bool = True, purpose: str = "pool") -> list[dict]:
-        """The newest set of the given purpose. A follow-through set must never be restored as the kick pool: it is one
-        direction, not a graded spread, and restoring one kept every kick inside it (the 'Brazilian pool' bug)."""
-        newest = self._one(LATEST_SET_ID_SQL, (purpose,))
-        if not newest:
-            return []
-        candidates = self.candidate_set(newest["set_id"])
-        if not usable_only:
-            return candidates
-        return [candidate for candidate in candidates if is_usable(candidate)]
-
-    def usable_pool_candidates(self, since: float) -> list[dict]:
-        """Every usable pool candidate proposed since `since`, oldest first. A pool is topped up band by band, so
-        the picks that survive a restart span several sets."""
-        rows = self._all(RECENT_POOL_ROWS_SQL, (since,))
-        return [candidate for candidate in map(dict, rows) if is_usable(candidate)]
-
     def library_candidates(self, lean: str = "", limit: int = 200) -> list[dict]:
-        """Pool candidates from any time that are still playable: resolved, never played or kicked, proposed under
-        this lean. One row per track (the newest), newest first."""
+        """Candidates from any time that are still playable: resolved, never played or kicked, proposed under this
+        lean. One row per track (the newest), newest first."""
         seen_tracks: set[int] = set()
         library = []
         for row in map(dict, self._all(LIBRARY_ROWS_SQL, (lean,))):
@@ -578,25 +475,6 @@ class Store:
             if len(library) >= limit:
                 break
         return library
-
-    # ---------------------------------------------------------------- kv stores
-    def get_profile(self, key: str) -> bytes | None:
-        row = self._one("SELECT value FROM profile WHERE key=?", (key,))
-        if row is None:
-            return None
-        return row["value"]
-
-    def set_profile(self, key: str, value: bytes) -> None:
-        self._run("INSERT OR REPLACE INTO profile(key, value, updated_at) VALUES (?,?,?)", (key, value, time.time()))
-
-    def get_config(self, key: str, default: str | None = None) -> str | None:
-        row = self._one("SELECT value FROM config WHERE key=?", (key,))
-        if row is None:
-            return default
-        return row["value"]
-
-    def set_config(self, key: str, value: str) -> None:
-        self._run("INSERT OR REPLACE INTO config(key, value) VALUES (?,?)", (key, value))
 
     # ------------------------------------------------------ dedup, done here
     def seen(self, artist: str, title: str) -> bool:

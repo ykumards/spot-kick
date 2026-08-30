@@ -141,7 +141,7 @@ class Api:
         from ..brain.llm import make_backend
         from ..ears import clap
         from ..kick.session import KickSession
-        from ..mind.store import Store
+        from ..memory.store import Store
 
         clap.ensure_model(log=self._log)
         store = Store(self.cfg.db_path)

@@ -29,7 +29,7 @@ import numpy as np
 from spotkick.brain.prompts import Context, candidates_prompt
 from spotkick.ears import clap, features
 from spotkick.kick import bands
-from spotkick.mind.store import Store
+from spotkick.memory.store import Store
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "parity"
 SAMPLE_RATE = features.SR

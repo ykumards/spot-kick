@@ -28,7 +28,7 @@ def build_session(cfg: config.Config, log=print):
     """
     from .brain.llm import make_backend
     from .kick.session import KickSession
-    from .mind.store import Store
+    from .memory.store import Store
 
     store = Store(cfg.db_path)
     return KickSession(cfg, store, make_backend(cfg), log=log)
@@ -112,7 +112,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    from .mind.store import Store
+    from .memory.store import Store
 
     cfg = config.load()
     store = Store(cfg.db_path)
@@ -131,7 +131,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_prompt(args: argparse.Namespace) -> int:
     from .brain.prompts import Context, candidates_prompt
-    from .mind.store import Store
+    from .memory.store import Store
 
     cfg = config.load()
     context = Context.from_store(Store(cfg.db_path))

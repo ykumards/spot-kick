@@ -5,7 +5,7 @@ import pytest
 
 from spotkick.brain import resolve
 from spotkick.ears import clap, features, previews
-from spotkick.mind.store import Store
+from spotkick.memory.store import Store
 from spotkick.player import spotify
 from spotkick.player.spotify_api import SpotifyAPI, SpotifyAPIError
 
@@ -74,7 +74,6 @@ def test_lookup_prefers_exact_artist_and_shortest_title():
     ]
     found = previews.lookup("Azymuth", "Linha do Horizonte", session=http_returning(results))
     assert found is not None
-    assert found.itunes_id == 2
     assert found.preview_url == "u2"
     assert found.duration_s == 270.0
     assert found.album == "Light as a Feather"

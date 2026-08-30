@@ -9,7 +9,7 @@ from spotkick.brain.llm import BrainError
 from spotkick.config import Config
 from spotkick.ears import clap, previews
 from spotkick.kick import bands, session
-from spotkick.mind.store import Store
+from spotkick.memory.store import Store
 from spotkick.player.spotify import PlayerError, Track
 from spotkick.player.spotify_api import SpotifyAPI
 
@@ -89,7 +89,13 @@ class FakeBrain:
 
 def fake_preview(artist: str, title: str, *, country: str = "us", session=None) -> previews.Preview:
     number = title_number(title)
-    return previews.Preview(artist, title, None, number, f"http://p/{number}", 200.0)
+    return previews.Preview(artist, title, None, f"http://p/{number}", 200.0)
+
+
+def candidate_set_ids(store: Store) -> list[str]:
+    """Every set the brain was asked for, oldest first."""
+    rows = store._all("SELECT DISTINCT set_id FROM candidates ORDER BY id")
+    return [row["set_id"] for row in rows]
 
 
 class FakeSpotifyAPI(SpotifyAPI):
@@ -148,7 +154,7 @@ def test_kick_picks_by_measured_distance_and_judges_the_continuation(world):
     assert wait(lambda: listener.ready() > 0)              # prefetch happened in the background
     assert wait(lambda: not listener._pool_building())     # a band top-up may follow; let it land
     assert "Last plays" in brain.calls[0]
-    first_set_id = store.usable_pool_candidates(since=0)[0]["set_id"]
+    first_set_id = candidate_set_ids(store)[0]
     set_rows = store.candidate_set(first_set_id)
     assert len(set_rows) == 6
     assert all(row["track_id"] for row in set_rows)
@@ -315,7 +321,7 @@ def test_an_empty_band_is_topped_up_in_the_background(world):
     assert wait(lambda: len(brain.calls) >= 2)
     assert "all labelled 'near'" in brain.calls[1]
     assert wait(lambda: listener.ready() > first_ready)        # merged, not replaced
-    assert len({row["set_id"] for row in store.usable_pool_candidates(since=0)}) == 2
+    assert len(candidate_set_ids(store)) == 2
 
     listener.observe()                                         # tap is still empty (the picks measured far)...
     assert wait(lambda: len(brain.calls) >= 3)
@@ -336,7 +342,7 @@ def test_a_track_proposed_twice_is_in_the_pool_once(world):
     for number in range(4):
         play_through(player, listener, number)
     assert wait(lambda: listener.ready() > 0 and not listener._pool_building())
-    first = store.usable_pool_candidates(since=0)[0]
+    first = store.library_candidates()[-1]
     duplicate_rows = [{"reach": "far", "direction": "again", "artist": first["artist"], "title": first["title"],
                        "why": "", "track_id": first["track_id"]}]
     store.add_candidates("dup-set", duplicate_rows)                # the same song, proposed in a second set

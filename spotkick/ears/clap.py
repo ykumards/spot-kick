@@ -22,7 +22,7 @@ from . import features
 if TYPE_CHECKING:  # onnxruntime and the store are runtime imports deferred below; only their types are needed here
     import onnxruntime
 
-    from ..mind.store import Store, Track
+    from ..memory.store import Store, Track
 
 MODEL_TAG = "clap-htsat-unfused-onnx"
 ONNX_FILE = "clap-audio.onnx"

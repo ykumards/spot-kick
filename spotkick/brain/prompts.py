@@ -53,7 +53,7 @@ KICKED_DIRECTIONS = 10
 KICKED_ARTISTS = 25
 
 # Annotations on each recent play, keyed by the event's source and kind.
-SOURCE_TAG = {"spotify": "", "kick": " [kick]", "minime": " [mini-me]", "user": ""}
+SOURCE_TAG = {"spotify": "", "kick": " [kick]"}
 KIND_TAG = {"skip": " (skipped)", "partial": " (partial)"}
 
 REACH_GROUPS = 3

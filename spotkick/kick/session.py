@@ -26,7 +26,7 @@ import numpy as np
 from ..brain import propose, resolve
 from ..brain.llm import BrainError
 from ..ears import clap, previews
-from ..mind.store import Store, Track
+from ..memory.store import Store, Track
 from ..player import spotify
 from ..player.spotify_api import NOT_CONFIGURED_MESSAGE, SpotifyAPI
 from . import bands
@@ -94,11 +94,10 @@ class Pool:
 
 @dataclass
 class ActiveKick:
+    """The kick being judged: what `followed` needs, and the URI that tells the kicked song from Spotify's picks."""
     id: int
     pre: np.ndarray
     kick_vec: np.ndarray
-    direction: str
-    strength: str
     track_uri: str
     n_since: int = 0
     followed: float = 0.0
@@ -192,7 +191,6 @@ class KickSession:
         if track is None or not track.spotify_uri:
             return
         self.active = ActiveKick(id=kick["id"], pre=kick["pre_state"], kick_vec=kick["kick_vec"],
-                                 direction=kick["direction"] or "", strength=kick["strength"],
                                  track_uri=track.spotify_uri, n_since=kick["n_since"] or 0,
                                  followed=kick["followed"] or 0.0)
 
@@ -250,11 +248,6 @@ class KickSession:
         self.log(f"pool refilled from the library: {len(pool.items)} picks · {self.coverage_line()}")
         return True
 
-    def _event_context(self) -> dict:
-        step, far = self.state.scale()
-        return {"typical_step": round(step, 4), "far": round(far, 4), "n_state": len(self.state.history),
-                "kick_id": self._active_kick_id(), "lean": self.cfg.lean}
-
     def _active_kick_id(self) -> int | None:
         if self.active is None:
             return None
@@ -288,8 +281,7 @@ class KickSession:
             return
         track = self.store.track_by_uri(previous.uri)
         if track is not None:
-            self.store.add_event("skip", track.id, "spotify", skip_at_s=self._max_pos, completion=completion,
-                                 ctx=self._event_context())
+            self.store.add_event("skip", track.id, "spotify", skip_at_s=self._max_pos, completion=completion)
 
     def ingest_track(self, playing: spotify.Track) -> None:
         """A new track is playing: put it in the store and the state, and if a kick is active, judge the kick by it."""
@@ -299,12 +291,11 @@ class KickSession:
         track = self.store.track_by_uri(playing.uri)
         if track is None:
             track = self.store.upsert_track(playing.artist, playing.name, album=playing.album, spotify_uri=playing.uri,
-                                            duration_s=playing.duration_s, resolved_how="played")
+                                            duration_s=playing.duration_s)
         embedding = self.embedding_for(track)
         if embedding is not None:
             self.state.update(embedding, counts_for_scale=not is_kick_track)
-        self.store.add_event("play", track.id, source, popularity=playing.popularity, kick_id=self._active_kick_id(),
-                             ctx=self._event_context())
+        self.store.add_event("play", track.id, source, popularity=playing.popularity, kick_id=self._active_kick_id())
         if kick is None:
             return
         if is_kick_track:
@@ -340,7 +331,7 @@ class KickSession:
             if preview is None or not preview.preview_url:
                 self.log(f"no preview for {track.label}; not in the state")
                 return None
-            track = self.store.upsert_track(track.artist, track.title, album=preview.album, itunes_id=preview.itunes_id,
+            track = self.store.upsert_track(track.artist, track.title, album=preview.album,
                                             preview_url=preview.preview_url, duration_s=preview.duration_s)
         try:
             return clap.embed_track(self.store, self.embedder, track)
@@ -562,8 +553,7 @@ class KickSession:
             self.store.update_candidate(cand_id, rejected_reason="not on spotify")
             return None
         track = self.store.upsert_track(preview.artist, preview.title, album=preview.album, spotify_uri=resolved.uri,
-                                        itunes_id=preview.itunes_id, preview_url=preview.preview_url,
-                                        duration_s=preview.duration_s, resolved_how="api")
+                                        preview_url=preview.preview_url, duration_s=preview.duration_s)
         if not track.spotify_uri:
             # The upsert attaches the resolved URI to a track that had none, so this only guards the type.
             self.store.update_candidate(cand_id, rejected_reason="not on spotify")
@@ -643,8 +633,7 @@ class KickSession:
 
     def kick(self, magnitude: float) -> dict:
         self.check_can_kick()
-        if not self.ready():
-            self.wait_for_pool()
+        self.wait_for_pool()
         pool, items = self.pool_snapshot()
         strength = bands.strength_for(magnitude)
         target = bands.target_for(magnitude)
@@ -697,13 +686,11 @@ class KickSession:
         played = self.player.play_and_confirm(chosen.uri)
         kick_id = self.store.add_kick(strength=strength, magnitude=float(magnitude), target_rel=target,
                                       direction=chosen.direction, why=chosen.why, track_id=chosen.track.id,
-                                      distance=best.distance, rel=best.rel, band=best.band, dose=1, pre_state=pre,
+                                      distance=best.distance, rel=best.rel, band=best.band, pre_state=pre,
                                       kick_vec=chosen.embedding, popularity=played.popularity)
         self.store.update_candidate(chosen.cand_id, chosen=1, kick_id=kick_id)
-        self.store.add_event("kick", chosen.track.id, "kick", kick_id=kick_id, popularity=played.popularity,
-                             ctx=self._event_context())
-        self.active = ActiveKick(id=kick_id, pre=pre, kick_vec=chosen.embedding, direction=chosen.direction,
-                                 strength=strength, track_uri=chosen.uri)
+        self.store.add_event("kick", chosen.track.id, "kick", kick_id=kick_id, popularity=played.popularity)
+        self.active = ActiveKick(id=kick_id, pre=pre, kick_vec=chosen.embedding, track_uri=chosen.uri)
         self.follow_through(chosen, played, kick_id)
         self._drop_from_pool(pool, chosen)
         summary = (f"kick #{kick_id} {strength} (target {target:.2f}) → {chosen.track.label} · "
@@ -722,8 +709,7 @@ class KickSession:
         """The kick track is playing now: ingest it here so the log has it even if nobody observes again."""
         self.judge_previous_track()
         self.state.update(chosen.embedding, counts_for_scale=False)
-        self.store.add_event("play", chosen.track.id, "kick", popularity=played.popularity, kick_id=kick_id,
-                             ctx=self._event_context())
+        self.store.add_event("play", chosen.track.id, "kick", popularity=played.popularity, kick_id=kick_id)
         self._last_uri = chosen.uri
         self._last_track = played
         self._max_pos = 0.0
@@ -744,9 +730,9 @@ class KickSession:
         track = self.store.track_by_uri(playing.uri)
         if track is None:
             track = self.store.upsert_track(playing.artist, playing.name, album=playing.album, spotify_uri=playing.uri,
-                                            duration_s=playing.duration_s, resolved_how="played")
+                                            duration_s=playing.duration_s)
         loved_now = not self.store.is_loved(track.id)
-        self.store.add_event("love" if loved_now else "unlove", track.id, "user", ctx=self._event_context())
+        self.store.add_event("love" if loved_now else "unlove", track.id, "user")
         self.log(f"{'loved' if loved_now else 'unloved'} {track.label}")
         return track, loved_now
 
@@ -809,7 +795,7 @@ class KickSession:
         if not stored:
             return None
         chosen = self.spotify_picks_since(kick)
-        return {"id": kick.id, "strength": kick.strength, "direction": kick.direction,
+        return {"id": kick.id, "strength": stored["strength"], "direction": stored["direction"] or "",
                 "track": self.store.track(stored["track_id"]), "distance": stored["distance"], "rel": stored["rel"],
                 "band": stored["band"], "popularity": stored["popularity"], "n_since": kick.n_since,
                 "followed": kick.followed, "verdict": bands.verdict(kick.followed, kick.n_since),

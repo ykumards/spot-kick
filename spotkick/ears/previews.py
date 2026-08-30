@@ -1,16 +1,16 @@
 """30-second previews from the iTunes Search API. No auth; this is where the audio for the ruler comes from."""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Protocol
 
 import requests
 
+from ..names import normalize_name
+
 SEARCH = "https://itunes.apple.com/search"
 SEARCH_LIMIT = 8
 SEARCH_TIMEOUT_S = 15
-NON_ALPHANUMERIC = re.compile(r"[^a-z0-9]+")
 
 
 class HttpResponse(Protocol):
@@ -37,14 +37,8 @@ class Preview:
     artist: str
     title: str
     album: str | None
-    itunes_id: int
     preview_url: str | None
     duration_s: float | None
-
-
-def normalize_text(text: str) -> str:
-    """Lowercase, punctuation collapsed to single spaces, so "Linha do Horizonte" matches "linha-do-horizonte"."""
-    return NON_ALPHANUMERIC.sub(" ", text.lower()).strip()
 
 
 def match_strength(wanted: str, found: str) -> int:
@@ -58,8 +52,8 @@ def match_strength(wanted: str, found: str) -> int:
 
 def rank_key(result: dict, wanted_artist: str, wanted_title: str) -> tuple[int, int, int]:
     """Higher is better: artist match, then title match, then the shortest title (album cuts over remixes/live)."""
-    found_artist = normalize_text(result.get("artistName", ""))
-    found_title = normalize_text(result.get("trackName", ""))
+    found_artist = normalize_name(result.get("artistName", ""))
+    found_title = normalize_name(result.get("trackName", ""))
     artist_strength = match_strength(wanted_artist, found_artist)
     title_strength = match_strength(wanted_title, found_title)
     return (artist_strength, title_strength, -len(found_title))
@@ -71,7 +65,6 @@ def to_preview(result: dict) -> Preview:
         artist=result["artistName"],
         title=result["trackName"],
         album=result.get("collectionName"),
-        itunes_id=result["trackId"],
         preview_url=result.get("previewUrl"),
         duration_s=duration_s,
     )
@@ -87,8 +80,8 @@ def lookup(artist: str, title: str, *, country: str = "us", session: HttpClient 
     results = [result for result in response.json().get("results", []) if result.get("previewUrl")]
     if not results:
         return None
-    wanted_artist = normalize_text(artist)
-    wanted_title = normalize_text(title)
+    wanted_artist = normalize_name(artist)
+    wanted_title = normalize_name(title)
     best = max(results, key=lambda result: rank_key(result, wanted_artist, wanted_title))
     artist_strength, title_strength, _ = rank_key(best, wanted_artist, wanted_title)
     if artist_strength == 0 or title_strength == 0:

@@ -10,7 +10,7 @@ from spotkick.brain.llm import BrainError, make_backend
 from spotkick.brain.prompts import CANDIDATES_SCHEMA, Context, candidates_prompt
 from spotkick.brain.propose import propose
 from spotkick.config import Config
-from spotkick.mind.store import Store
+from spotkick.memory.store import Store
 
 DAY_S = 86400
 GOOD_URI = "spotify:track:3n3Ppam7vgaVa1iaRUc9Lp"
@@ -38,7 +38,6 @@ def seeded_store() -> Store:
         distance=0.4,
         rel=0.7,
         band="kick",
-        dose=3,
         pre_state=None,
         kick_vec=None,
         t=now - 50,

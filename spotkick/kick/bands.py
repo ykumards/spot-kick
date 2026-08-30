@@ -1,4 +1,4 @@
-"""The kick's arithmetic: listener state, distance scale, bands, measured selection, dose, and the verdict.
+"""The kick's arithmetic: listener state, distance scale, bands, measured selection, and the verdict.
 
 All distances are cosine distances in the ruler's space. Bands are relative to the listener's *own* recent
 spread, because CLAP distances are compressed and a fixed threshold would mean different things to different
