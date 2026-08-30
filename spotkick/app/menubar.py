@@ -44,6 +44,7 @@ from WebKit import WKUserContentController, WKWebView, WKWebViewConfiguration
 
 from .. import config
 from ..brain.llm import BACKEND_NAMES
+from ..kick import bands
 
 if TYPE_CHECKING:  # runtime imports of these are deferred (see load_session / player_state); only the types live here
     from ..kick.session import KickSession
@@ -69,6 +70,8 @@ EDIT_MENU_ITEMS = (
     ("Select All", "selectAll:", "a"),
 )
 BRIDGE_NAME = "api"
+# The arithmetic the panel needs to name a wind-up and count the judging window, so it never re-encodes bands.py.
+RULES = {"strength_ceilings": list(bands.STRENGTH_CEILINGS), "songs_to_judge": bands.SONGS_TO_JUDGE}
 
 
 def jsonable(value: object) -> object:
@@ -190,6 +193,7 @@ class Api:
             "lean": self.cfg.lean,
             "brain": self.cfg.llm_backend,
             "brains": list(BACKEND_NAMES),
+            "rules": RULES,
             "spotify": self.spotify_status(),
         }
 
