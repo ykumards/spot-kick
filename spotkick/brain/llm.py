@@ -1,9 +1,8 @@
-"""The Brain's small contract.
+"""The brain backend protocol and its factory.
 
-    complete_json(prompt, schema) -> dict     structured output, validated against `schema` by the backend
-
-Two backends, both coding-agent CLIs that already hold a login: the Codex CLI and the Claude Code CLI.
-`cfg.llm_backend` picks one. The brain names songs and nothing else; ids come from Spotify (`brain.resolve`).
+A backend implements ``complete_json(prompt, schema) -> dict``: structured output validated against ``schema``.
+Two backends exist, the Codex CLI and the Claude Code CLI; ``cfg.llm_backend`` selects one. The brain proposes
+song names only; track ids come from ``brain.resolve``.
 """
 from __future__ import annotations
 

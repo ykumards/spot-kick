@@ -1,4 +1,4 @@
-"""Freeze what the Python implementation computes, so a port can be checked against it instead of against a guess.
+"""Write the parity fixtures: the Python implementation's outputs, for a port to be checked against.
 
 Writes `fixtures/parity/` — every file the Swift port's tests read:
 
@@ -99,8 +99,7 @@ class Wave:
 
 
 def lcg_noise(count: int, seed: int) -> np.ndarray:
-    """Uniform noise in [-1, 1) from a 32-bit LCG: `state = (a * state + c) mod 2**32`, taken in that order so a
-    port that runs the same recurrence gets the same samples."""
+    """Return uniform noise in [-1, 1) from a 32-bit LCG, ``state = (a * state + c) mod 2**32``."""
     samples = np.empty(count, dtype=np.float64)
     state = seed % LCG_MODULUS
     for index in range(count):
@@ -110,7 +109,7 @@ def lcg_noise(count: int, seed: int) -> np.ndarray:
 
 
 def render_wave(spec: dict) -> np.ndarray:
-    """A wave spec from the manifest → mono float32 samples at 48 kHz."""
+    """Render a wave spec from the manifest to mono float32 samples at 48 kHz."""
     count = int(SAMPLE_RATE * spec["seconds"])
     time = np.arange(count, dtype=np.float64) / SAMPLE_RATE
     samples = np.zeros(count, dtype=np.float64)
@@ -130,18 +129,18 @@ def render_wave(spec: dict) -> np.ndarray:
 
 
 def build_waves() -> list[Wave]:
-    """Three shapes that exercise different paths: a long clip that gets three crops, an exactly-10 s clip that
-    gets one, and a short clip that must be repeat-padded."""
+    """Return the three test waves: a long clip (three crops), an exactly-10 s clip (one crop), a short clip
+    (repeat-padded).
+    """
     return [Wave(spec["name"], render_wave(spec), spec["description"]) for spec in WAVE_SPECS]
 
 
 def ulp_sensitivity(wave: np.ndarray, mel_filters: np.ndarray, seed: int = 0) -> float:
-    """How far the log-mel output moves when every input sample is nudged by one float32 ULP.
+    """Return how far the log-mel output moves when every input sample changes by one float32 ULP.
 
-    A port regenerates the test audio from the manifest rather than reading it, and two correct `sin`
-    implementations may differ in the last bit. In near-silent mel bins (a pure chirp reaches −100 dB) that last bit
-    is worth far more than the front end's own arithmetic noise, so the parity tolerance is set from this
-    measurement instead of from taste.
+    A port regenerates the test audio rather than reading it, and two correct ``sin`` implementations may differ in
+    the last bit. In near-silent mel bins that bit outweighs the front end's own arithmetic noise, so the tolerance
+    is derived from this measurement.
     """
     generator = np.random.default_rng(seed)
     base = features.log_mel(wave, mel_filters)
@@ -158,7 +157,7 @@ def write_f32(path: Path, array: np.ndarray) -> dict:
 
 
 def bands_cases() -> dict:
-    """The kick's arithmetic on fixed inputs: no audio, no model, pure numbers a port must match exactly."""
+    """Return the bands arithmetic on fixed inputs: numbers a port must match exactly, needing no audio or model."""
     generator = np.random.default_rng(11)
     history = generator.standard_normal((8, 16)).astype(np.float32)
     history /= np.linalg.norm(history, axis=1, keepdims=True)
@@ -203,7 +202,7 @@ def bands_cases() -> dict:
 
 
 def prompt_fixtures(out_dir: Path) -> list[dict]:
-    """A fixed listening history through the real store, then the exact prompt text the brain would receive."""
+    """Write the prompt fixtures from a fixed listening history, and return their manifest entries."""
     store = Store(":memory:")
     plays = [
         ("Soft Machine", "Hazard Profile Pt.1", "play"),

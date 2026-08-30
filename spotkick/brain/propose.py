@@ -1,5 +1,6 @@
-"""Ask the Brain for candidates; reject the ones the store already knows; ask once more if the set came back thin.
-The output is names only — resolving, embedding, and choosing happen elsewhere.
+"""Candidate proposals from the brain, deduplicated against the store.
+
+The output is names only; resolving, embedding and choosing happen in ``kick.session``.
 """
 from __future__ import annotations
 
@@ -47,13 +48,13 @@ class Candidate:
 
 
 def strip_links(text: str) -> str:
-    """Models sometimes decorate free text with markdown links or URLs despite being told not to; keep the words."""
+    """Remove markdown links and bare URLs from free text."""
     without_markdown = MARKDOWN_LINK_RE.sub(r"\1", text or "")
     return BARE_URL_RE.sub("", without_markdown).strip()
 
 
 def parse_candidates(raw_candidates: list[dict]) -> list[Candidate]:
-    """Turn the Brain's JSON rows into Candidates, dropping rows missing an artist or title."""
+    """Convert the brain's rows to Candidates, dropping rows without an artist or title."""
     candidates = []
     for raw in raw_candidates:
         artist = (raw.get("artist") or "").strip()
@@ -72,7 +73,7 @@ def parse_candidates(raw_candidates: list[dict]) -> list[Candidate]:
 
 
 def mark_rejects(candidates: list[Candidate], store, seen_keys: set[str]) -> None:
-    """Flag repeats within the set and anything the listener already played, kicked to, or picked."""
+    """Mark duplicates within the set and candidates the store has already seen."""
     for candidate in candidates:
         key = candidate.dedup_key()
         if key in seen_keys:
@@ -99,7 +100,7 @@ def propose(
     timeout: int = 240,
     log: Logger = ignore_log,
 ) -> list[Candidate]:
-    """Candidates the listener hasn't already played/kicked/picked, with the rejects kept (marked) for the log."""
+    """Ask the brain for candidates, mark the rejects, and ask once more if too few are fresh."""
     context = Context.from_store(store)
     first_prompt = candidates_prompt(context, n=n, reach=reach, lean=lean, misses=misses)
     candidates = ask_brain(backend, first_prompt, timeout)

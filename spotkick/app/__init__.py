@@ -1,1 +1,1 @@
-"""app"""
+"""The macOS menubar app."""

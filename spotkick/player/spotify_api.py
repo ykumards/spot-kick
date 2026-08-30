@@ -1,9 +1,9 @@
-"""Spotify's Web API, with the developer's own credentials: the only way a name becomes a track id.
+"""Track search through the Spotify Web API with the developer's own app credentials.
 
-Client Credentials flow: the client id (config.toml) and secret (the Keychain, or the environment for terminal
-runs) are exchanged over TLS for an app token — no user login, no browser — which is cached until it expires.
-Only `/v1/search` is used. Each developer registers their own app at developer.spotify.com; nothing is shipped in
-the repo, and the secret is never written to a file of ours.
+The Client Credentials flow exchanges the client id (config.toml) and secret (Keychain, or the environment for
+terminal runs) for an app token, cached until it expires. No user login is involved and only ``/v1/search`` is
+used. Each developer registers their own app; no credentials are shipped, and the secret is never written to a
+file.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ class HttpResponse(Protocol):
 
 
 class HttpClient(Protocol):
-    """`requests`, a `requests.Session`, or a test fake."""
+    """The ``requests`` module, a ``Session``, or a test fake."""
 
     def get(
         self, url: str, *, params: dict | None = ..., headers: dict | None = ..., timeout: float | None = ...
@@ -75,14 +75,14 @@ class SpotifyAPI:
         return bool(self.client_id and self.client_secret)
 
     def set_credentials(self, client_id: str, client_secret: str) -> None:
-        """Swap credentials in place (the session keeps its reference); the next call fetches a fresh token."""
+        """Replace the credentials in place; the next call fetches a fresh token."""
         self.client_id = client_id
         self.client_secret = client_secret
         self._token = None
         self._token_expires_at = 0.0
 
     def token(self) -> str:
-        """The cached app token, refreshed a minute before Spotify says it expires."""
+        """Return the app token, refreshing it TOKEN_SAFETY_MARGIN_S before it expires."""
         if not self.configured:
             raise SpotifyAPIError(NOT_CONFIGURED_MESSAGE)
         if self._token is not None and time.time() < self._token_expires_at:
@@ -100,7 +100,7 @@ class SpotifyAPI:
         return token
 
     def search_tracks(self, artist: str, title: str) -> list[FoundTrack]:
-        """Spotify's best matches for the name, in its order. Raises when Spotify cannot be asked."""
+        """Return Spotify's search results for the name, in its order. Raises SpotifyAPIError on failure."""
         params = {"q": f"track:{title} artist:{artist}", "type": "track", "limit": SEARCH_LIMIT}
         headers = {"Authorization": f"Bearer {self.token()}"}
         try:
@@ -119,7 +119,7 @@ def found_track(item: dict) -> FoundTrack:
 
 
 def stored_secret() -> str:
-    """The environment first (a terminal or CI run), else the Keychain, else nothing."""
+    """Return the client secret from the environment, else the Keychain, else an empty string."""
     from_environment = os.environ.get(SECRET_ENV_VAR, "")
     if from_environment:
         return from_environment
@@ -130,8 +130,10 @@ def stored_secret() -> str:
 
 
 def save_credentials(client_id: str, client_secret: str, *, session: HttpClient | None = None) -> None:
-    """Prove the credentials work (one token request), then keep them: the id in config.toml, the secret in the
-    Keychain. Raises SpotifyAPIError when Spotify refuses them, and nothing is written."""
+    """Validate the credentials with one token request, then store them.
+
+    Raises SpotifyAPIError when Spotify refuses them; nothing is written in that case.
+    """
     from ..config import save_setting
 
     SpotifyAPI(client_id, client_secret, session=session).token()

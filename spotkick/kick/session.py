@@ -1,15 +1,15 @@
-"""One listener, one Spotify, one kick at a time.
+"""The kick loop for one listener and one Spotify instance.
 
-    observe()          poll the player; ingest what's playing into the store and the state; attribute it to the
-                       active kick and update its verdict; keep the candidate pool warm
-    kick(magnitude)    choose the prefetched candidate whose *measured* distance is nearest the wind-up, play it,
-                       confirm the player has it, and log the kick
+``observe()`` polls the player, records what is playing in the store and the listener state, judges the active
+kick by it, and keeps the candidate pool stocked. ``kick(magnitude)`` plays the prefetched candidate whose
+measured distance is nearest the wind-up, confirms playback, and records the kick.
 
-The Brain is only ever asked for names (brain.propose). Resolving, embedding, measuring, choosing, playing, and
-judging are all done here, in the ruler's space, and every step lands in the store.
+The brain is only asked for names (``brain.propose``); resolving, embedding, measuring, choosing, playing and
+judging happen here, and every step is written to the store.
 
-Threading: observe() runs on the caller's thread; build_pool() usually runs on a daemon thread started by
-maybe_prefetch(). `self.pool` is only ever swapped or trimmed under `_pool_lock`; everything else is single-threaded.
+Threading: ``observe()`` runs on the caller's thread; ``build_pool()`` usually runs on a daemon thread started by
+``maybe_prefetch()``. ``self.pool`` is only replaced or trimmed under ``_pool_lock``; everything else is
+single-threaded.
 """
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ Logger = Callable[[str], None]
 
 
 class Player(Protocol):
-    """What the session needs from a player: the `spotify` module satisfies this, and so does a test fake."""
+    """The player interface the session needs; the ``spotify`` module and the test fake both satisfy it."""
 
     def now_playing(self) -> spotify.Track | None: ...
 
@@ -94,7 +94,7 @@ class Pool:
 
 @dataclass
 class ActiveKick:
-    """The kick being judged: what `followed` needs, and the URI that tells the kicked song from Spotify's picks."""
+    """The kick being judged: the inputs to ``followed`` and the URI that identifies the kicked track."""
     id: int
     pre: np.ndarray
     kick_vec: np.ndarray
@@ -104,8 +104,11 @@ class ActiveKick:
 
 
 def without_repeated_tracks(items: list[PoolItem]) -> list[PoolItem]:
-    """One pool item per track: the same song can be proposed in two sets (a build and a later top-up), and the
-    brain is only told about songs already *played*, not ones already in the pool."""
+    """Return the items with duplicate tracks removed, keeping the first of each.
+
+    The same song can be proposed in a build and a later top-up, because the brain is only told about songs
+    already played.
+    """
     seen_tracks: set[int] = set()
     unique = []
     for item in items:
@@ -158,7 +161,7 @@ class KickSession:
 
     # ------------------------------------------------------------------ state
     def warm_state(self) -> None:
-        """Rebuild the listener state from the last plays in the store, so a restart doesn't start from nothing."""
+        """Rebuild the listener state from the most recent plays in the store."""
         recent = self.store.recent(WARM_STATE_RECENT_ROWS)
         plays = [row for row in recent if row["kind"] == "play"][:WARM_STATE_PLAYS]
         replay: list[tuple[int, bool]] = []
@@ -172,8 +175,10 @@ class KickSession:
                 self.state.update(embeddings[track_id], counts_for_scale=spotify_chose_it)
 
     def skip_already_logged_song(self) -> None:
-        """The song playing at startup is usually the last one logged before the restart; counting it again would
-        add a zero-distance play and collapse the listener's scale."""
+        """Treat the track playing at startup as already observed when it is the last one logged.
+
+        Logging it again would add a zero-distance play and collapse the listener's scale.
+        """
         playing = self.playing_now_or_none()
         if playing is not None and playing.uri == self.last_logged_uri():
             self._last_uri = playing.uri
@@ -181,7 +186,7 @@ class KickSession:
             self._max_pos = playing.position_s
 
     def restore_active_kick(self, max_age_s: float = ACTIVE_KICK_MAX_AGE_S) -> None:
-        """A kick from the last hour is still being judged across a restart."""
+        """Restore the active kick from the store when the last kick is recent enough to still be judged."""
         kick = self.store.last_kick()
         if not kick or time.time() - kick["t"] > max_age_s:
             return
@@ -201,7 +206,7 @@ class KickSession:
             return None
 
     def last_logged_uri(self) -> str | None:
-        """The Spotify URI of the most recent event in the store, if that track is known."""
+        """Return the Spotify URI of the most recently logged track, or None."""
         recent = self.store.recent(1)
         if not recent:
             return None
@@ -211,8 +216,7 @@ class KickSession:
         return track.spotify_uri
 
     def restore_pool(self) -> None:
-        """The pool survives a restart: every candidate ever resolved under the current lean is in the store with its
-        embedding, so no Brain call is needed to have picks again."""
+        """Restore the pool from the library, so a restart needs no brain call to have candidates."""
         pool = self.pool_from_library(for_track_id=None)
         if pool is None:
             return
@@ -220,8 +224,7 @@ class KickSession:
         self.log(f"pool {pool.set_id} restored from the library: {len(pool.items)} picks · {self.coverage_line()}")
 
     def pool_from_library(self, for_track_id: int | None) -> Pool | None:
-        """A pool made of songs already searched, resolved and measured: the store's library for the current lean.
-        The bands it leaves empty are what the brain gets asked for."""
+        """Build a pool from the current lean's library of resolved, embedded candidates; None when it is empty."""
         rows = self.store.library_candidates(self.cfg.lean)
         if not rows:
             return None
@@ -238,8 +241,7 @@ class KickSession:
         return Pool(set_id=LIBRARY_SET_ID, for_track_id=for_track_id, built_at=time.time(), items=items)
 
     def refill_from_library(self, for_track_id: int | None) -> bool:
-        """Replace a missing or stale pool with the library, when it has anything; the observer then tops up
-        whichever bands are still empty."""
+        """Replace a missing or stale pool with the library. Returns False when the library is empty."""
         pool = self.pool_from_library(for_track_id)
         if pool is None:
             return False
@@ -272,7 +274,7 @@ class KickSession:
         return {"track": playing, **self.snapshot()}
 
     def judge_previous_track(self) -> None:
-        """When the track changes, judge the one that just ended: a skip is a signal the store should have."""
+        """Record a skip event for the track that just ended, if the listener left it early."""
         previous = self._last_track
         if previous is None or previous.duration_s <= 0:
             return
@@ -284,7 +286,7 @@ class KickSession:
             self.store.add_event("skip", track.id, "spotify", skip_at_s=self._max_pos, completion=completion)
 
     def ingest_track(self, playing: spotify.Track) -> None:
-        """A new track is playing: put it in the store and the state, and if a kick is active, judge the kick by it."""
+        """Record a newly playing track in the store and the state, and judge the active kick by it."""
         kick = self.active
         is_kick_track = kick is not None and playing.uri == kick.track_uri
         source = "kick" if is_kick_track else "spotify"
@@ -305,10 +307,11 @@ class KickSession:
             self.judge_active_kick(kick, playing)
 
     def judge_active_kick(self, kick: ActiveKick, playing: spotify.Track) -> None:
-        """One more song has played since the kick: re-measure how far the listener followed it.
+        """Update the active kick's ``followed`` and verdict for one more recommender-chosen song.
 
-        The verdict is the state of play after SONGS_TO_JUDGE songs and then frozen. The state is an EWMA, so
-        measuring on would report the drift of the whole session, not Spotify's response to this kick."""
+        The verdict is frozen after SONGS_TO_JUDGE songs: the state is an exponentially weighted mean, so measuring
+        further would report the drift of the whole session rather than the response to this kick.
+        """
         if kick.n_since >= bands.SONGS_TO_JUDGE:
             return
         now = self.state.vector
@@ -322,7 +325,7 @@ class KickSession:
         self.log(f"since kick #{kick.id}: {playing.artist} — {playing.name} · followed {kick.followed:.2f} → {verdict}")
 
     def embedding_for(self, track: Track) -> np.ndarray | None:
-        """The track's embedding: from the store if we have it, else from its preview (looked up if needed)."""
+        """Return the track's embedding from the store, computing it from a preview when necessary. None on failure."""
         stored = self.store.embedding(track.id)
         if stored is not None:
             return stored
@@ -356,8 +359,7 @@ class KickSession:
         self._pool_thread.start()
 
     def _build_pool_quietly(self, for_track_id: int | None, reach: str | None = None) -> None:
-        """A prefetch runs in the background with nobody to catch its exceptions, and the brain being rate-limited
-        or offline is an ordinary event: log one line and leave the existing pool alone."""
+        """Run a build or top-up on the background thread, logging any failure and leaving the existing pool intact."""
         self._building_reach = reach
         try:
             if reach is None:
@@ -372,8 +374,7 @@ class KickSession:
             self._building_reach = None
 
     def maybe_prefetch(self) -> None:
-        """Keep every band of the pool stocked while music plays: a full build when there is no usable pool, else a
-        top-up aimed at the first band that has run dry, so a kick of any strength finds something measured for it."""
+        """Start a background build when there is no usable pool, or a top-up for the first empty band."""
         if self._pool_building() or self.state.vector is None:
             return
         if not self.api.configured:
@@ -392,7 +393,7 @@ class KickSession:
             self._start_pool_thread(current_id, reach=REACH_FOR_BAND[band])
 
     def pool_bands(self) -> dict[str, int]:
-        """How many pool items currently measure into each band, against the listener state as it is now."""
+        """Return how many pool items currently measure into each band."""
         counts = {band: 0 for band in bands.STRENGTHS}
         with self._pool_lock:
             items = list(self.pool.items) if self.pool is not None else []
@@ -401,8 +402,9 @@ class KickSession:
         return counts
 
     def bench(self) -> dict[str, dict]:
-        """The pool as the listener sees it: per band, the picks measured into it nearest first, the one a kick of
-        that strength would play now (nearest the band's target), and what the band is doing."""
+        """Return the pool per band: its picks nearest first, the one a kick of that strength would play, and the
+        band's state.
+        """
         with self._pool_lock:
             items = list(self.pool.items) if self.pool is not None else []
         picks: dict[str, list[dict]] = {band: [] for band in bands.STRENGTHS}
@@ -423,8 +425,11 @@ class KickSession:
         return result
 
     def band_state(self, band: str, count: int, building: bool, now: float) -> str:
-        """What an empty band is doing. 'capped' is the measured verdict that the lean itself confines the reach:
-        the brain has been told twice where its picks landed and still nothing inside the lean measures this far."""
+        """Return the band's state: building, ready, capped, resting or empty.
+
+        'capped' means the lean confines the reach: after LEAN_CAP_TRIES top-ups nothing inside the lean measured
+        this far.
+        """
         if building and (self._building_reach is None or self._building_reach == REACH_FOR_BAND[band]):
             return "building"
         if count > 0:
@@ -440,7 +445,7 @@ class KickSession:
         return " ".join(f"{band} {count}" for band, count in counts.items())
 
     def band_retry_delay(self, band: str) -> float:
-        """How long an empty band waits before it is asked for again, by how many tries have already missed."""
+        """Return how long an empty band waits before another top-up, given the number of misses so far."""
         attempts = self._band_attempts.get(band, 0)
         return BAND_RETRY_DELAYS_S[min(attempts, len(BAND_RETRY_DELAYS_S) - 1)]
 
@@ -448,9 +453,11 @@ class KickSession:
         return now - self._band_asked_at.get(band, 0.0) < self.band_retry_delay(band)
 
     def first_empty_band(self) -> str | None:
-        """The empty band that is due another try, least-tried first: every band gets its first ask before any gets
-        a second. Every miss is fed back to the brain, so a retry is a correction, not a repeat; the delays between
-        tries only pace the brain's quota."""
+        """Return the empty band due for a top-up, least-tried first, or None.
+
+        Every band gets a first attempt before any gets a second; the delay between attempts paces the brain's
+        quota.
+        """
         now = time.time()
         due = [band for band, count in self.pool_bands().items() if count == 0 and not self.band_is_waiting(band, now)]
         if not due:
@@ -458,7 +465,7 @@ class KickSession:
         return min(due, key=lambda band: self._band_attempts.get(band, 0))
 
     def _pool_is_off_track(self, current_id: int | None, min_age_s: float = POOL_OFF_TRACK_MIN_AGE_S) -> bool:
-        """The pool was built while something else was playing and is old enough to be worth replacing."""
+        """Return True when the pool was built for another track and is older than ``min_age_s``."""
         if self.pool is None or self.pool.for_track_id == current_id:
             return False
         return time.time() - self.pool.built_at > min_age_s
@@ -471,8 +478,11 @@ class KickSession:
         reach: str | None = None,
         misses: list[dict] | None = None,
     ) -> Pool:
-        """Ask the Brain for names, then materialize them in parallel. A plain pool becomes `self.pool`; a `reach`
-        set is one band's worth, returned for `top_up_pool` to merge, with the band's earlier misses fed back."""
+        """Ask the brain for candidates and materialise them in parallel.
+
+        Without ``reach`` the result becomes ``self.pool``. With ``reach`` it is one band's worth, returned for
+        ``top_up_pool`` to merge, with the band's earlier misses included in the prompt.
+        """
         started = time.time()
         generation = self._pool_generation
         set_id = uuid.uuid4().hex[:SET_ID_LENGTH]
@@ -504,8 +514,11 @@ class KickSession:
         return pool
 
     def top_up_pool(self, for_track_id: int | None, reach: str) -> None:
-        """One band's worth of candidates, merged into the live pool. A top-up that leaves the band still empty is a
-        miss: what it produced and where each pick measured is remembered and fed back on the next try."""
+        """Fetch one band's worth of candidates and merge them into the pool.
+
+        A top-up that leaves the band empty is recorded as a miss, with where each pick measured, for the next
+        attempt's prompt.
+        """
         band = next(band for band, band_reach in REACH_FOR_BAND.items() if band_reach == reach)
         self._band_asked_at[band] = time.time()
         attempts = self._band_attempts.get(band, 0)
@@ -517,7 +530,7 @@ class KickSession:
         self.log(f"pool now {self.coverage_line()}")
 
     def record_band_outcome(self, band: str, fresh: Pool) -> None:
-        """Did the top-up fill its band? If not, count the miss and remember where its picks actually landed."""
+        """Record whether the top-up filled its band; on a miss, count it and remember where the picks measured."""
         if self.pool_bands()[band] > 0:
             self._band_attempts[band] = 0
             self._band_misses.pop(band, None)
@@ -533,7 +546,7 @@ class KickSession:
                  f"next try in {self.band_retry_delay(band):.0f}s with them fed back")
 
     def merge_into_pool(self, fresh: Pool) -> None:
-        """Add a set's items to the live pool, or make them the pool if there is none."""
+        """Add a set's items to the pool, or make them the pool when there is none."""
         with self._pool_lock:
             if self.pool is None:
                 self.pool = fresh
@@ -541,9 +554,10 @@ class KickSession:
             self.pool.items = without_repeated_tracks(self.pool.items + fresh.items)
 
     def materialize_candidate(self, cand_id: int, candidate: propose.Candidate) -> PoolItem | None:
-        """Names → a playable, measurable thing: preview (iTunes), embedding (ruler), URI (resolver).
+        """Turn a named candidate into a PoolItem: preview, Spotify URI, embedding.
 
-        Rejections are recorded on the candidate row, so a name that didn't make it is still in the log."""
+        Returns None when any step fails; the reason is recorded on the candidate row.
+        """
         preview = previews.lookup(candidate.artist, candidate.title, session=self.http)
         if preview is None or not preview.preview_url:
             self.store.update_candidate(cand_id, rejected_reason="no preview")
@@ -577,13 +591,12 @@ class KickSession:
             return len(self.pool.items)
 
     def set_brain(self, backend: Backend) -> None:
-        """Switch which CLI names the songs. The old brain's picks are discarded; the next observation rebuilds."""
+        """Switch the brain backend and discard its predecessor's pool."""
         self.backend = backend
         self.invalidate_pool()
 
     def invalidate_pool(self) -> None:
-        """Discard prefetched picks after a setting changes; the observer will build a fresh set. A band that
-        stayed empty under the old setting may fill under the new one, so the cooldowns go too."""
+        """Discard the pool and the band cooldowns after a setting changes; the next observation rebuilds."""
         with self._pool_lock:
             self.pool = None
             self._band_asked_at.clear()
@@ -592,12 +605,12 @@ class KickSession:
             self._pool_generation += 1
 
     def is_stale_generation(self, generation: int) -> bool:
-        """True when the pool was invalidated after a build with this generation started."""
+        """Return True when the pool was invalidated after the build with this generation started."""
         with self._pool_lock:
             return generation != self._pool_generation
 
     def wait_for_pool(self, timeout_s: float = 120.0) -> int:
-        """Block until candidates are available (the kick path when the prefetch hasn't finished)."""
+        """Block until the pool has candidates or ``timeout_s`` elapses, starting a build if none is running."""
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if self.ready():
@@ -609,7 +622,7 @@ class KickSession:
 
     # ------------------------------------------------------------------- kick
     def measure_pool(self, items: list[PoolItem]) -> list[bands.Measured]:
-        """Measure every pool item against the current state, recording the numbers on the candidate rows."""
+        """Measure every item against the current state and record the numbers on the candidate rows."""
         measured = bands.measure(self.state, [item.embedding for item in items])
         for item, measurement in zip(items, measured):
             self.store.update_candidate(item.cand_id, distance=measurement.distance, rel=measurement.rel,
@@ -617,7 +630,7 @@ class KickSession:
         return measured
 
     def measure_and_choose(self, items: list[PoolItem], target: float) -> tuple[list[bands.Measured], bands.Measured]:
-        """Measure the items and pick the one nearest the target. An empty pool is an error here, not a None."""
+        """Measure the items and choose the one nearest ``target``. Raises RuntimeError for an empty pool."""
         measured = self.measure_pool(items)
         best = bands.choose(measured, target)
         if best is None:
@@ -625,7 +638,7 @@ class KickSession:
         return measured, best
 
     def pool_snapshot(self) -> tuple[Pool, list[PoolItem]]:
-        """The live pool and a copy of its items, taken under the lock. An empty or missing pool is an error."""
+        """Return the pool and a copy of its items, taken under the lock. Raises RuntimeError for an empty pool."""
         with self._pool_lock:
             if self.pool is None or not self.pool.items:
                 raise RuntimeError(NO_CANDIDATES_MESSAGE)
@@ -645,8 +658,7 @@ class KickSession:
         return self.send_on(pool, items, measured, best, strength=strength, magnitude=magnitude, target=target)
 
     def kick_pick(self, cand_id: int) -> dict:
-        """The listener points at a sub on the bench: send that one on. Its strength is whatever it measures as —
-        the wind-up is implied by the pick, not the other way round."""
+        """Kick one named candidate. Its strength is the band it measures into."""
         self.check_can_kick()
         pool, items = self.pool_snapshot()
         index = next((position for position, item in enumerate(items) if item.cand_id == cand_id), None)
@@ -678,7 +690,7 @@ class KickSession:
         magnitude: float,
         target: float,
     ) -> dict:
-        """Play the chosen sub, log the kick, and start judging Spotify's response to it."""
+        """Play the chosen candidate, record the kick, and make it the active kick."""
         origin = self.state.vector
         assert origin is not None  # check_can_kick / kick guard this before choosing
         chosen = items[best.index]
@@ -706,7 +718,7 @@ class KickSession:
                 "band": best.band, "candidates": candidates}
 
     def follow_through(self, chosen: PoolItem, played: spotify.Track, kick_id: int) -> None:
-        """The kick track is playing now: ingest it here so the log has it even if nobody observes again."""
+        """Record the kicked track as playing, so the log has it even if no observation follows."""
         self.judge_previous_track()
         self.state.update(chosen.embedding, counts_for_scale=False)
         self.store.add_event("play", chosen.track.id, "kick", popularity=played.popularity, kick_id=kick_id)
@@ -715,15 +727,17 @@ class KickSession:
         self._max_pos = 0.0
 
     def _drop_from_pool(self, pool: Pool, chosen: PoolItem) -> None:
-        """Remove the played item, but only if the pool it came from is still the live one."""
+        """Remove the played item from ``pool`` if it is still the live pool."""
         with self._pool_lock:
             if self.pool is pool:
                 pool.items = [item for item in pool.items if item.cand_id != chosen.cand_id]
 
     # ------------------------------------------------------------------- love
     def toggle_love(self) -> tuple[Track, bool]:
-        """Favourite the song playing now, or take the favourite back: a `love` or `unlove` event (append-only), the
-        latest of which is what counts. The brain sees current favourites as "Loved: …"."""
+        """Toggle the favourite on the current track by appending a ``love`` or ``unlove`` event.
+
+        Returns the track and whether it is now loved.
+        """
         playing = self.playing_now_or_none()
         if playing is None:
             raise RuntimeError(NOT_PLAYING_MESSAGE)
@@ -737,9 +751,10 @@ class KickSession:
         return track, loved_now
 
     def step_series(self, n: int = STEPS_SHOWN) -> list[dict]:
-        """Cosine distance from each play to the play before it, in listening order: the steps the ruler is made
-        of, with the kicks in among them. Plays without an embedding are skipped, so a step may span one. A song
-        logged twice in a row (kicked, then skipped away from) is one song, not a step of length zero."""
+        """Return the cosine distance from each play to the one before it, in listening order.
+
+        Plays without an embedding are skipped, and a track logged twice in a row counts once.
+        """
         steps: list[dict] = []
         previous: np.ndarray | None = None
         previous_track_id: int | None = None
@@ -770,8 +785,10 @@ class KickSession:
                 "kick": self._kick_snapshot()}
 
     def spotify_picks_since(self, kick: ActiveKick) -> list[dict]:
-        """Spotify's own picks after the kick, each with how far along the kick it sits: the same projection the
-        verdict uses, applied to the song itself rather than the listener state (0 where you were, 1 on the kick)."""
+        """Return the recommender's picks since the kick, each with its projection along the kick.
+
+        The projection is the one the verdict uses, applied to the track rather than the listener state.
+        """
         plays = [play for play in self.store.plays_since_kick(kick.id) if play["kind"] == "play"]
         embeddings = self.store.embeddings([play["track_id"] for play in plays])
         picks: list[dict] = []

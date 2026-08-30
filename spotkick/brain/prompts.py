@@ -1,5 +1,7 @@
-"""Context, not memory. The prompt is built from a fixed set of capped store queries, so it is ~20 lines whether
-the history holds 10 plays or 10,000. The Brain sees names and words; never vectors, never the whole log.
+"""The proposal prompt and its schema.
+
+The prompt is built from a fixed set of capped store queries, so its size does not grow with the history. The
+brain sees names and words only, never vectors or the full log.
 """
 from __future__ import annotations
 
@@ -82,7 +84,7 @@ class Context:
         )
 
     def recent_play_lines(self) -> list[str]:
-        """One bullet per recent play, annotated with where it came from and whether it was skipped."""
+        """Return one line per recent play, tagged with its source and whether it was skipped."""
         lines = ["Last plays, most recent first:"]
         for play in self.recent:
             source_tag = SOURCE_TAG.get(play["source"], "")
@@ -118,8 +120,10 @@ def artist_names(ranked: list[tuple[str, int]]) -> list[str]:
 
 
 def lean_line(lean: str) -> str:
-    """The listener's lean bounds every pick and outranks the rest of the prompt: 'top 50' must not lose to a reach's
-    'nothing famous', and a 'far' pick is far *within* the lean, not outside it."""
+    """Return the instruction that keeps every pick inside the lean.
+
+    The lean outranks the reach text: a 'far' pick is far within the lean, not outside it.
+    """
     cleaned = " ".join(lean.split())
     instruction = f'The listener asked for this lean, and every pick must stay inside it: "{cleaned}".'
     priority = (
@@ -134,8 +138,7 @@ BAND_WORD = {"tap": "a small step", "kick": "a kick", "boot": "a boot"}
 
 
 def misses_line(misses: list[dict], reach: str) -> str:
-    """What the audio ruler made of the last picks at this reach: the brain named them, the measurement disagreed.
-    Telling it exactly which songs landed where is what lets it correct instead of repeating itself."""
+    """Return the line reporting where the earlier picks at this reach measured, so the brain can correct."""
     landed = "; ".join(
         f"{miss['artist']} — {miss['title']} measured as {BAND_WORD.get(miss['band'], miss['band'])}"
         for miss in misses[-MISSES_SHOWN:]
@@ -156,11 +159,12 @@ def candidates_prompt(
     lean: str | None = None,
     misses: list[dict] | None = None,
 ) -> str:
-    """One call, several graded candidates in distinct directions. A separate step measures them and picks.
+    """Build the prompt asking for graded candidates in distinct directions.
 
-    With `reach`, every candidate is asked for at that one reach: the top-up for a band the pool has run out of.
-    With `misses`, the earlier picks at that reach and where each actually measured, so the brain corrects.
-    With `lean`, the listener's own words (a mood, a language, an era) bound every pick."""
+    With ``reach``, every candidate is requested at that one reach (a top-up for an empty band). With ``misses``,
+    the earlier picks at that reach and where each measured are included. With ``lean``, the listener's own words
+    bound every pick.
+    """
     per_reach = max(1, n // REACH_GROUPS)
     head = (
         "You are proposing songs to kick a listener's Spotify recommendations somewhere new. A separate step measures "

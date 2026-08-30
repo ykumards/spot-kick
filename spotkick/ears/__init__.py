@@ -1,1 +1,1 @@
-"""ears"""
+"""Audio previews and CLAP embeddings."""

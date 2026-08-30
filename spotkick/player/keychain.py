@@ -1,7 +1,7 @@
-"""The macOS Keychain, through the `security` tool: where the Spotify client secret lives.
+"""The Spotify client secret in the macOS Keychain, through the ``security`` tool.
 
-Never the config file, never the repo. `security` is the only dependency, and one item, service `spotkick`,
-holds the secret; reading it back needs no prompt for the user who stored it.
+One generic-password item under service ``spotkick`` holds the secret. Reading it back needs no prompt for the
+user who stored it.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def run_security(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 def get_secret(account: str = ACCOUNT, *, service: str = SERVICE) -> str | None:
-    """The stored secret, or None when there is none."""
+    """Return the stored secret, or None."""
     completed = run_security("find-generic-password", "-a", account, "-s", service, "-w")
     if completed.returncode == NOT_FOUND_EXIT_CODE:
         return None
@@ -32,7 +32,7 @@ def get_secret(account: str = ACCOUNT, *, service: str = SERVICE) -> str | None:
 
 
 def set_secret(secret: str, account: str = ACCOUNT, *, service: str = SERVICE) -> None:
-    """Store or replace the secret. `-U` updates an existing item in place."""
+    """Store or replace the secret."""
     completed = run_security("add-generic-password", "-U", "-a", account, "-s", service, "-w", secret)
     if completed.returncode != 0:
         raise KeychainError(completed.stderr.strip() or "keychain write failed")

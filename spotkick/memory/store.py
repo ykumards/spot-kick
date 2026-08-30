@@ -1,12 +1,10 @@
-"""The only module that touches the database.
+"""The SQLite store; the only module that touches the database.
 
-One SQLite file holds everything Spot Kick knows about one listener: tracks, their audio embeddings, every
-signal (plays, skips, loves, kicks), every kick with its measured distance and verdict, and every candidate the
-Brain ever proposed. The Brain never
-reads this file directly; it gets the *context queries* at the bottom, each capped so the prompt stays
-~20 lines no matter how long the history is. Dedup is done here, not by asking the model nicely.
+One file holds everything known about one listener: tracks, embeddings, events (plays, skips, loves, kicks),
+kicks with their measurements and verdicts, and every candidate the brain proposed. The brain never reads the
+file; it receives the capped context queries at the end of this module.
 
-One connection, many threads: every statement runs under one lock.
+One connection is shared across threads; every statement runs under one lock.
 """
 from __future__ import annotations
 
@@ -227,7 +225,7 @@ class Store:
             self.migrate()
 
     def migrate(self) -> None:
-        """Bring a database from an earlier version up to SCHEMA: add what is missing, drop what is dead."""
+        """Bring a database from an earlier version up to SCHEMA: add missing columns, drop unused ones."""
         if "lean" not in self.columns("candidates"):
             self.db.execute(ADD_LEAN_COLUMN_SQL)
         for table, dead_columns in DROPPED_COLUMNS.items():
@@ -251,7 +249,7 @@ class Store:
             self.db.execute(sql, args)
 
     def _insert(self, sql: str, args: Sequence[object] = ()) -> int:
-        """Run an INSERT and return the id of the new row."""
+        """Run an INSERT and return the new row id."""
         with self._lock:
             row_id = self.db.execute(sql, args).lastrowid
         if row_id is None:
@@ -263,7 +261,7 @@ class Store:
             return self.db.execute(sql, args).fetchone()
 
     def _row(self, sql: str, args: Sequence[object] = ()) -> sqlite3.Row:
-        """Like `_one`, for a row that must exist (one we just wrote, or an aggregate)."""
+        """Like ``_one`` for a row that must exist; raises LookupError otherwise."""
         row = self._one(sql, args)
         if row is None:
             raise LookupError(f"no row for: {sql}")
@@ -284,7 +282,7 @@ class Store:
         preview_url: str | None = None,
         duration_s: float | None = None,
     ) -> Track:
-        """Insert or enrich. Identity is the normalized artist|title; a URI is attached when we learn it."""
+        """Insert a track or fill in its missing columns. Identity is the normalised artist|title key."""
         key = track_key(artist, title)
         with self._lock:
             row = self._one("SELECT * FROM tracks WHERE key=?", (key,))
@@ -419,7 +417,7 @@ class Store:
         self.update_row("kicks", kick_id, fields, KICK_UPDATABLE_FIELDS)
 
     def plays_since_kick(self, kick_id: int) -> list[dict]:
-        """Spotify's own plays after the kick (forced follow-through excluded)."""
+        """Return the recommender-chosen plays after the kick; the kicked track itself is excluded."""
         kick = self.kick(kick_id)
         if not kick:
             return []
@@ -452,7 +450,7 @@ class Store:
         self.update_row("candidates", cand_id, fields, CANDIDATE_UPDATABLE_FIELDS)
 
     def update_row(self, table: str, row_id: int, fields: dict, allowed: set[str]) -> None:
-        """Set the given columns on one row, refusing any column outside `allowed`: measurements are written once."""
+        """Set the given columns on one row. Columns outside ``allowed`` raise ValueError."""
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"not updatable: {unknown}")
@@ -463,8 +461,9 @@ class Store:
         return [dict(row) for row in rows]
 
     def library_candidates(self, lean: str = "", limit: int = 200) -> list[dict]:
-        """Candidates from any time that are still playable: resolved, never played or kicked, proposed under this
-        lean. One row per track (the newest), newest first."""
+        """Return resolved candidates under this lean whose track was never played or kicked, newest first, one
+        row per track.
+        """
         seen_tracks: set[int] = set()
         library = []
         for row in map(dict, self._all(LIBRARY_ROWS_SQL, (lean,))):
@@ -478,7 +477,7 @@ class Store:
 
     # ------------------------------------------------------ dedup, done here
     def seen(self, artist: str, title: str) -> bool:
-        """Ever played, kicked, or picked. The Brain is asked not to repeat; the store enforces it."""
+        """Return True when the track was ever played or kicked."""
         track = self.find_track(artist, title)
         if track is None:
             return False
@@ -489,17 +488,17 @@ class Store:
 
     # ---------------------------------------------------- context queries (Brain)
     def recent(self, n: int = 12) -> list[dict]:
-        """Last n plays, most recent first, with where they came from."""
+        """Return the last ``n`` plays, most recent first."""
         rows = self._all(RECENT_PLAYS_SQL, (n,))
         return [dict(row) for row in rows]
 
     def play_sequence(self, n: int = 40) -> list[dict]:
-        """Last n plays in the order they happened (oldest first), with track ids."""
+        """Return the last ``n`` plays, oldest first, with track ids."""
         rows = self._all(PLAY_SEQUENCE_SQL, (n,))
         return [dict(row) for row in rows]
 
     def top_artists(self, *, days: int | None = None, n: int = 10) -> list[tuple[str, int]]:
-        """Most-played artists; completed plays count 1, partials 0.5, skips 0. Optionally within the last `days`."""
+        """Return the most-played artists; a play counts 1, a partial 0.5, a skip 0. Optionally within ``days``."""
         args: list = []
         condition = "e.kind IN ('play','partial')"
         if days is not None:
@@ -518,7 +517,7 @@ class Store:
         return [row_label(row) for row in rows]
 
     def rejected(self, *, days: int = 14, n: int = 8) -> list[str]:
-        """Skipped or hated recently: 'not this vein'."""
+        """Return tracks skipped within ``days``, most recent first."""
         rows = self._all(REJECTED_SQL, (days_ago(days), n))
         return list(dict.fromkeys(row_label(row) for row in rows))
 
@@ -538,11 +537,11 @@ class Store:
         return latest is not None and latest["kind"] == "love"
 
     def spotify_play_count(self) -> int:
-        """Plays Spotify chose (kicked tracks excluded): the denominator of the experiment."""
+        """Return the number of recommender-chosen plays."""
         return self._row(PLAY_COUNT_SQL)["n"]
 
     def recent_kicks(self, n: int = 30) -> list[dict]:
-        """Newest first: what was asked (strength, target rel), what was played, where it measured, the verdict."""
+        """Return the last ``n`` kicks with their track, measurement and verdict, newest first."""
         return [dict(row) for row in self._all(RECENT_KICKS_SQL, (n,))]
 
     def count_rows(self, table: str) -> int:

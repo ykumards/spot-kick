@@ -1,13 +1,13 @@
 # pyright: reportAttributeAccessIssue=false, reportCallIssue=false
 # PyObjC ships no type stubs, so every AppKit/WebKit/objc name resolves as unknown to the checker.
-"""The leg in the menubar: click 🦵, a panel drops down; wind the leg back, let go, kick.
+"""The menubar app: an NSStatusItem whose popover hosts the panel in a WKWebView.
 
-NSStatusItem + NSPopover + WKWebView (PyObjC). The HTML talks to `Api` over a WKScriptMessageHandler bridge:
-JS posts {id, method, args}; Python answers with window.__resolve(id, ok, payload). Every Api method runs
-off the main thread. We never touch Spotify's window.
+The panel's JavaScript calls ``Api`` through a WKScriptMessageHandler bridge: JS posts ``{id, method, args}`` and
+Python answers with ``window.__resolve(id, ok, payload)``. Every ``Api`` method runs off the main thread. Spotify's
+own window is never touched.
 
-PyObjC fixes the shape of selector methods (`name_` with a trailing underscore per argument, the `init` idiom that
-reassigns `self`, `@objc.python_method` for plain Python helpers on NSObject subclasses); those are not style choices.
+PyObjC dictates the shape of selector methods: a trailing underscore per argument, ``init`` reassigning ``self``,
+and ``@objc.python_method`` for plain Python helpers on NSObject subclasses.
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ RULES = {"strength_ceilings": list(bands.STRENGTH_CEILINGS), "songs_to_judge": b
 
 
 def jsonable(value: object) -> object:
-    """Dataclasses, numpy arrays and nested containers → plain JSON-able Python."""
+    """Convert dataclasses, numpy arrays and nested containers to JSON-serialisable values."""
     if hasattr(value, "__dataclass_fields__"):
         return {field: jsonable(getattr(value, field)) for field in value.__dataclass_fields__}
     if isinstance(value, dict):
@@ -88,7 +88,7 @@ def jsonable(value: object) -> object:
 
 
 def track_for_panel(track: Track | None) -> dict | None:
-    """The fields the panel shows for the current track; None when nothing is playing."""
+    """Return the track fields the panel shows, or None when nothing is playing."""
     if track is None:
         return None
     return {
@@ -103,7 +103,7 @@ def track_for_panel(track: Track | None) -> dict | None:
 
 
 def player_state() -> dict:
-    """Transport state for the panel; "?" when Spotify cannot be reached."""
+    """Return the transport state for the panel; the state is "?" when Spotify cannot be reached."""
     from ..player import spotify  # deferred: keeps the import graph light until the panel is up
 
     try:
@@ -113,7 +113,7 @@ def player_state() -> dict:
 
 
 class Api:
-    """What the panel can ask for. Loads the session in the background so the menubar appears at once."""
+    """The methods the panel may call. The session loads in the background so the menubar appears at once."""
 
     def __init__(self) -> None:
         self.cfg = config.load()
@@ -125,8 +125,10 @@ class Api:
         threading.Thread(target=self.load_then_observe_forever, daemon=True).start()
 
     def load_then_observe_forever(self) -> None:
-        """Background thread: build the session, then keep observing whether or not the panel is open, because plays
-        must be logged and the pool kept warm either way."""
+        """Build the session, then observe forever.
+
+        Runs whether or not the panel is open: plays must be logged and the pool kept warm either way.
+        """
         try:
             self.load_session()
         except Exception as error:  # noqa: BLE001 — shown in the panel
@@ -148,7 +150,7 @@ class Api:
         self.session = KickSession(self.cfg, store, make_backend(self.cfg), log=self._log)
 
     def observe(self) -> None:
-        """One observation of the player, cached in `self.last` for the next `status` call."""
+        """Observe the player once and cache the result in ``self.last`` for the next ``status`` call."""
         session = self.session
         if session is None:
             return
@@ -198,12 +200,12 @@ class Api:
         }
 
     def spotify_status(self) -> dict:
-        """What the panel may know: the client id and whether a secret is on file — never the secret itself."""
+        """Return the client id and whether a secret is stored. The secret itself is never returned."""
         configured = self.session.api.configured if self.session is not None else False
         return {"client_id": self.cfg.spotify_client_id, "configured": configured}
 
     def stats(self) -> dict:
-        """What the store knows about the experiment so far, for the stats screen."""
+        """Return the figures for the stats screen."""
         if self.session is None:
             raise RuntimeError(self.error or "still loading")
         store = self.session.store
@@ -224,8 +226,11 @@ class Api:
         }
 
     def set_spotify_credentials(self, client_id: str, client_secret: str) -> dict:
-        """Validate against Spotify, then store: id in config.toml, secret in the Keychain. The running session
-        switches to them at once and drops its pool, which was built without lookups or with the old app."""
+        """Validate the credentials against Spotify, then store them.
+
+        The running session switches to them at once and drops its pool, which was built without lookups or with
+        the previous credentials.
+        """
         from ..player.spotify_api import save_credentials  # deferred: see load_session
 
         client_id = str(client_id).strip()
@@ -249,7 +254,7 @@ class Api:
         return {key: jsonable(item) for key, item in result.items()}
 
     def kick_pick(self, cand_id: int) -> dict:
-        """Send on one named sub from the bench."""
+        """Kick one named candidate from the bench."""
         if self.session is None:
             raise RuntimeError(self.error or "still loading")
         with self._observing:
@@ -271,8 +276,11 @@ class Api:
         return player_state()
 
     def love(self) -> dict:
-        """Toggle the favourite on the song playing now. Kept locally (and fed to the brain); Spotify's own library
-        needs a user login this app does not have."""
+        """Toggle the favourite on the current track.
+
+        Favourites are kept locally and shown to the brain; Spotify's own library needs a user login this app
+        does not have.
+        """
         if self.session is None:
             raise RuntimeError(self.error or "still loading")
         with self._observing:
@@ -281,7 +289,7 @@ class Api:
         return {"loved": loved, "artist": track.artist, "title": track.title}
 
     def set_lean(self, lean: str) -> str:
-        """The listener's lean in their own words, kept in config.toml; the picks proposed without it are dropped."""
+        """Set the lean, persist it to config.toml, and drop the pool proposed without it."""
         lean = " ".join(str(lean).split())[:MAX_LEAN_LENGTH]
         if lean != self.cfg.lean:
             self.cfg.lean = lean
@@ -291,7 +299,7 @@ class Api:
         return self.cfg.lean
 
     def set_brain(self, name: str) -> str:
-        """Switch the CLI that names songs, remember it in config.toml, and drop the old brain's prefetched picks."""
+        """Switch the brain backend, persist the choice to config.toml, and drop the previous backend's pool."""
         from ..brain.llm import make_backend  # deferred: see load_session
 
         name = str(name)
@@ -313,7 +321,7 @@ class Api:
 
 
 class Bridge(NSObject):
-    """WKScriptMessageHandler: each JS call becomes a background call on `Api`, answered through window.__resolve."""
+    """WKScriptMessageHandler that runs each JS call on ``Api`` off the main thread and answers via ``__resolve``."""
 
     ALLOWED_METHODS = frozenset(
         {"status", "kick", "kick_pick", "transport", "love", "set_lean", "set_brain", "set_spotify_credentials",
@@ -335,7 +343,7 @@ class Bridge(NSObject):
 
     @objc.python_method
     def dispatch(self, call_id: int, method: str, args: list[object]) -> None:
-        """Run one Api method off the main thread and hand the result (or the error) back to the page."""
+        """Run one ``Api`` method off the main thread and return its result or error to the page."""
         try:
             if method not in self.ALLOWED_METHODS:
                 raise ValueError(f"unknown method: {method}")
@@ -352,7 +360,7 @@ class Bridge(NSObject):
 
 
 class LegApp(NSObject):
-    """App delegate: owns the status item, the popover and the web view inside it."""
+    """Application delegate owning the status item, the popover and the web view."""
 
     def applicationDidFinishLaunching_(self, notification):
         self.api = Api()
@@ -369,8 +377,11 @@ class LegApp(NSObject):
 
     @objc.python_method
     def build_main_menu(self):
-        """An accessory app has no menu bar, but ⌘C/⌘V/⌘X/⌘A still travel through the main menu's key equivalents;
-        without an Edit menu the web view's text fields cannot copy or paste."""
+        """Build a main menu with an Edit submenu.
+
+        An accessory app shows no menu bar, but ⌘C/⌘V/⌘X/⌘A are still dispatched through the main menu's key
+        equivalents; without an Edit menu the web view's text fields cannot copy or paste.
+        """
         edit_menu = NSMenu.alloc().initWithTitle_("Edit")
         for title, selector, key in EDIT_MENU_ITEMS:
             edit_menu.addItem_(NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, selector, key))
@@ -439,8 +450,10 @@ class LegApp(NSObject):
 
     @objc.python_method
     def show_menu(self, sender):
-        """Right-click: the menu (Quit lives here). The menu is attached only for the click so left-clicks keep
-        reaching `toggle:`."""
+        """Show the right-click menu.
+
+        The menu is attached only for the duration of the click, so left-clicks continue to reach ``toggle:``.
+        """
         if self.popover.isShown():
             self.popover.performClose_(sender)
         self.item.setMenu_(self.menu)

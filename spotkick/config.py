@@ -1,4 +1,4 @@
-"""Where things live and what the knobs are. ~/.spotkick/config.toml overrides the defaults."""
+"""Configuration: defaults overridden by ~/.spotkick/config.toml."""
 from __future__ import annotations
 
 import os
@@ -30,7 +30,7 @@ class Config:
 
 
 def load(path: Path | None = None) -> Config:
-    """Defaults, overridden by whichever keys the TOML file sets. Unknown keys are ignored."""
+    """Load the configuration, applying any keys set in the TOML file. Unknown keys are ignored."""
     config = Config()
     config_path = path or config.home / CONFIG_FILENAME
     if config_path.exists():
@@ -44,10 +44,10 @@ def load(path: Path | None = None) -> Config:
 
 
 def save_setting(name: str, value: str | float | bool, path: Path | None = None) -> None:
-    """Write one top-level key back to the TOML file, keeping everything else as the user wrote it.
+    """Write one top-level key to the TOML file, leaving the rest of the file untouched.
 
-    The stdlib reads TOML but does not write it, and a full re-serialisation would drop comments; replacing or
-    appending one `name = value` line is enough for the panel's few knobs.
+    The stdlib reads TOML but does not write it, and re-serialising would drop comments, so the single
+    ``name = value`` line is replaced or appended.
     """
     config_path = path or HOME / CONFIG_FILENAME
     config_path.parent.mkdir(parents=True, exist_ok=True)

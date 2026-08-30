@@ -1,4 +1,4 @@
-"""30-second previews from the iTunes Search API. No auth; this is where the audio for the ruler comes from."""
+"""30-second preview lookup through the iTunes Search API, which needs no authentication."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,7 +14,7 @@ SEARCH_TIMEOUT_S = 15
 
 
 class HttpResponse(Protocol):
-    """The slice of `requests.Response` the lookups read."""
+    """The part of ``requests.Response`` the lookup reads."""
 
     @property
     def status_code(self) -> int: ...
@@ -25,7 +25,7 @@ class HttpResponse(Protocol):
 
 
 class HttpClient(Protocol):
-    """Anything with a `requests`-shaped `get`: the `requests` module, a `requests.Session`, or a test fake."""
+    """Anything with a ``requests``-style ``get``: the ``requests`` module, a ``Session``, or a test fake."""
 
     def get(
         self, url: str, *, params: dict | None = ..., headers: dict | None = ..., timeout: float | None = ...
@@ -42,7 +42,7 @@ class Preview:
 
 
 def match_strength(wanted: str, found: str) -> int:
-    """2 for an exact match, 1 when one contains the other, 0 otherwise. Both inputs already normalized."""
+    """Return 2 for an exact match, 1 when one name contains the other, 0 otherwise. Inputs must be normalised."""
     if wanted == found:
         return 2
     if wanted in found or found in wanted:
@@ -51,7 +51,7 @@ def match_strength(wanted: str, found: str) -> int:
 
 
 def rank_key(result: dict, wanted_artist: str, wanted_title: str) -> tuple[int, int, int]:
-    """Higher is better: artist match, then title match, then the shortest title (album cuts over remixes/live)."""
+    """Return a sort key: artist match, then title match, then shortest title (album versions over remixes)."""
     found_artist = normalize_name(result.get("artistName", ""))
     found_title = normalize_name(result.get("trackName", ""))
     artist_strength = match_strength(wanted_artist, found_artist)
@@ -71,8 +71,7 @@ def to_preview(result: dict) -> Preview:
 
 
 def lookup(artist: str, title: str, *, country: str = "us", session: HttpClient | None = None) -> Preview | None:
-    """Best match for (artist, title) with a preview. Prefers exact-ish artist and title matches, then the shortest
-    title (album versions over remixes/live cuts)."""
+    """Return the best-matching result with a preview, or None when neither artist nor title matches."""
     http = session or requests
     params = {"term": f"{artist} {title}", "entity": "song", "limit": SEARCH_LIMIT, "country": country}
     response = http.get(SEARCH, params=params, timeout=SEARCH_TIMEOUT_S)

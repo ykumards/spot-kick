@@ -1,8 +1,8 @@
-"""Claude Code CLI backend: `claude -p --json-schema`, using whatever login the CLI has. No SDK, no key.
+"""Claude Code CLI backend: ``claude -p --json-schema``, using the CLI's own login.
 
-Same shape as the Codex backend, different flags. `--json-schema` makes the CLI validate the answer against our
-schema and hand it back as `structured_output`; `--tools ""` leaves it no tools at all. Every call runs from an
-empty directory so no project settings or CLAUDE.md leak into the prompt.
+``--json-schema`` makes the CLI validate the answer against the schema and return it as ``structured_output``;
+``--tools ""`` gives it no tools. Every call runs from an empty directory so that no project settings or CLAUDE.md
+reach the prompt.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ OUTPUT_PREVIEW_CHARS = 200
 
 
 class ClaudeCode:
-    """The other brain: Anthropic's models through the Claude Code CLI."""
+    """Brain backend using the Claude Code CLI."""
 
     name = "claude"
 
@@ -34,8 +34,10 @@ class ClaudeCode:
         self.binary = binary
 
     def base_command(self) -> list[str]:
-        """The `claude -p` invocation: one JSON result, no saved session, no tools. `--tools` is variadic and would
-        swallow the prompt, so a boolean flag comes last."""
+        """Return the ``claude -p`` argv: one JSON result, no saved session, no tools.
+
+        ``--tools`` is variadic and would consume the prompt, so a boolean flag is placed last.
+        """
         command = [self.binary, "-p", "--model", self.model, "--output-format", "json", "--tools", NO_TOOLS]
         command += ["--max-turns", str(PROPOSE_MAX_TURNS), "--settings", NO_THINKING_SETTINGS]
         command += ["--no-session-persistence"]
@@ -59,7 +61,7 @@ class ClaudeCode:
 
 
 def parse_envelope(stdout: str) -> dict:
-    """The single JSON object `--output-format json` prints."""
+    """Parse the JSON object that ``--output-format json`` prints."""
     try:
         envelope = json.loads(stdout)
     except json.JSONDecodeError as error:

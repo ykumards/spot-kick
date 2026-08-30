@@ -37,7 +37,7 @@ BYTES_PER_MB = 1e6
 
 
 class AudioTower(torch.nn.Module):
-    """The audio half of CLAP as one module: HTSAT encoder → pooled output → projection. Un-normalized."""
+    """The audio half of CLAP as one module: HTSAT encoder, pooled output, projection. Output is not normalised."""
 
     def __init__(self, clap_model):
         super().__init__()
@@ -61,7 +61,7 @@ def unit_rows(matrix: np.ndarray) -> np.ndarray:
 
 
 def check_feature_parity(extractor, mel_filters: np.ndarray, crop: np.ndarray) -> np.ndarray:
-    """Our numpy log-mel against transformers' extractor on one 10 s crop. Returns ours for the tower checks."""
+    """Compare the numpy log-mel with transformers' extractor on one 10 s crop; return the numpy features."""
     reference = extractor._np_extract_fbank_features(crop, extractor.mel_filters_slaney)
     ours = features.log_mel(crop, mel_filters)
     max_diff = np.abs(ours - reference).max()
@@ -70,7 +70,7 @@ def check_feature_parity(extractor, mel_filters: np.ndarray, crop: np.ndarray) -
 
 
 def check_tower_parity(clap_model, tower: AudioTower, model_input: torch.Tensor) -> None:
-    """The wrapper (normalized) against `get_audio_features`, which normalizes internally."""
+    """Compare the normalised wrapper output with ``get_audio_features``, which normalises internally."""
     with torch.no_grad():
         wanted = clap_model.get_audio_features(input_features=model_input)
         if hasattr(wanted, "pooler_output"):
@@ -95,7 +95,7 @@ def export_onnx(tower: AudioTower, example_input: torch.Tensor, path: Path, opse
 
 
 def check_onnx_parity(path: Path, tower: AudioTower, wave: np.ndarray, mel_filters: np.ndarray) -> None:
-    """onnxruntime against torch on a full 3-clip batch, the shape the app actually runs."""
+    """Compare onnxruntime with torch on a 3-clip batch, the shape the app runs."""
     import onnxruntime  # deferred: only the parity check needs it
 
     session = onnxruntime.InferenceSession(str(path), providers=["CPUExecutionProvider"])
@@ -141,10 +141,11 @@ def main() -> None:
 
 
 def halve_weights(onnx_path: Path, wave: np.ndarray, mel_filters: np.ndarray) -> None:
-    """Rewrite the export with fp16 weights, keeping float32 inputs and outputs so the runtime code is unchanged.
+    """Rewrite the export with fp16 weights, keeping float32 inputs and outputs.
 
-    onnxruntime's own converter is used: the generic onnxconverter-common one mistypes the Cast nodes inside HTSAT's
-    attention blocks and the result does not load."""
+    onnxruntime's own converter is used; onnxconverter-common mistypes the Cast nodes inside HTSAT's attention
+    blocks and the result does not load.
+    """
     import onnx
     import onnxruntime
     from onnxruntime.transformers.float16 import convert_float_to_float16

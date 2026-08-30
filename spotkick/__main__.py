@@ -22,9 +22,9 @@ POLL_INTERVAL_S = 2.5
 
 
 def build_session(cfg: config.Config, log=print):
-    """Wire the store, the LLM backend and the kick session together.
+    """Build a KickSession from the configuration.
 
-    Imports are local so `spotkick status` does not pay for onnxruntime.
+    Imports are local so that ``spotkick status`` does not import onnxruntime.
     """
     from .brain.llm import make_backend
     from .kick.session import KickSession
@@ -35,7 +35,7 @@ def build_session(cfg: config.Config, log=print):
 
 
 def parse_magnitude(text: str) -> float:
-    """A strength name or a number in 0..1."""
+    """Parse a strength name or a number in [0, 1] into a magnitude."""
     if text in STRENGTH_MAGNITUDE:
         return STRENGTH_MAGNITUDE[text]
     magnitude = float(text)
@@ -45,9 +45,9 @@ def parse_magnitude(text: str) -> float:
 
 
 def watch(session, *, stop_after_songs: int | None = None) -> int:
-    """Print what Spotify plays and how the active kick is judged.
+    """Poll the player and print each track and the active kick's verdict.
 
-    Runs until Ctrl-C, or until `stop_after_songs` songs have followed the kick.
+    Runs until Ctrl-C, or until ``stop_after_songs`` songs have followed the kick.
     """
     previous_line = None
     try:
@@ -150,7 +150,7 @@ def cmd_forget(args: argparse.Namespace) -> int:
 
 
 def cmd_connect(args: argparse.Namespace) -> int:
-    """Prove the developer's Spotify app credentials work, then keep them: id in config.toml, secret in the Keychain."""
+    """Validate the Spotify app credentials and store them (id in config.toml, secret in the Keychain)."""
     import getpass
 
     from .player.spotify_api import SpotifyAPIError, save_credentials
@@ -174,8 +174,10 @@ def cmd_app(args: argparse.Namespace) -> int:
 
 
 def launch_detached() -> int:
-    """From a terminal, the menubar app belongs to the menu bar, not to the shell: start it in its own session with
-    its output in the app log, and give the prompt back. `--foreground` keeps the old behaviour for debugging."""
+    """Start the menubar app in its own session, with output in the app log, and return.
+
+    ``--foreground`` runs it attached to the terminal instead, for debugging.
+    """
     log_path = config.HOME / "app.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "a") as log_file:

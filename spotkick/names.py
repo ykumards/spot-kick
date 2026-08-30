@@ -1,4 +1,4 @@
-"""One spelling for a song name, so the same song is the same key wherever it is looked up."""
+"""Name normalisation shared by the store, the preview lookup and the resolver."""
 from __future__ import annotations
 
 import re

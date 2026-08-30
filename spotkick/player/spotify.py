@@ -1,7 +1,7 @@
-"""The hands: the Spotify desktop app over AppleScript. The only module that runs osascript.
+"""Control of the Spotify desktop app over AppleScript; the only module that runs osascript.
 
-Spotify plays any catalog track by URI and reports name / artist / album / duration / position / uri /
-popularity. We do not touch its window; if it pops forward on a play, so be it.
+Spotify plays any catalogue track by URI and reports the current track's name, artist, album, duration,
+position, URI and popularity. Its window is never touched.
 """
 from __future__ import annotations
 
@@ -60,10 +60,12 @@ class PlayerError(RuntimeError):
 
 
 def guarded(script: str) -> str:
-    """`tell application "Spotify"` launches Spotify when it is not running — and a Spotify launched that way in the
-    background sits stopped and ignores play requests, while the observer would relaunch it seconds after the listener
-    quit it. `application "Spotify" is running` neither launches nor needs a permission, and checking it in the same
-    script as the command leaves no window for Spotify to quit in between."""
+    """Wrap a script so it runs only when Spotify is running.
+
+    ``tell application "Spotify"`` launches Spotify when it is not running; launched that way it ignores play
+    requests, and the observer would relaunch it as soon as the listener quit it. ``application "Spotify" is
+    running`` neither launches it nor needs a permission, and checking in the same script leaves no gap.
+    """
     return (
         f"if {IS_RUNNING_SCRIPT} then\n"
         f"    {script}\n"
@@ -74,7 +76,7 @@ def guarded(script: str) -> str:
 
 
 def run_applescript(script: str) -> str:
-    """Run one AppleScript line through osascript and return its trimmed stdout."""
+    """Run an AppleScript through osascript and return its stripped stdout."""
     completed = subprocess.run(
         ["osascript", "-e", script], capture_output=True, text=True, timeout=OSASCRIPT_TIMEOUT_S, check=False
     )
@@ -100,7 +102,7 @@ class Track:
 
 
 def to_uri(uri: str) -> str | None:
-    """Canonical `spotify:track:<id>`, or None for anything that is not a track URI."""
+    """Return the canonical ``spotify:track:<id>``, or None for anything that is not a track URI."""
     match = URI_RE.search(uri or "")
     if match is None:
         return None
@@ -108,7 +110,7 @@ def to_uri(uri: str) -> str | None:
 
 
 def tell_spotify(script: str) -> str:
-    """Every script addressed to Spotify goes through here, wrapped in the running guard (see `guarded`)."""
+    """Run a script addressed to Spotify under the running guard. Raises PlayerError when Spotify is not running."""
     result = run_applescript(guarded(script))
     if result == NOT_RUNNING_MARKER:
         raise PlayerError(NOT_RUNNING_MESSAGE)
@@ -116,12 +118,12 @@ def tell_spotify(script: str) -> str:
 
 
 def state() -> str:
-    """playing | paused | stopped"""
+    """Return the player state: playing, paused or stopped."""
     return tell_spotify(STATE_SCRIPT)
 
 
 def parse_number(text: str) -> float:
-    """AppleScript numbers as floats; anything unparsable counts as zero."""
+    """Parse an AppleScript number; anything unparsable is 0."""
     try:
         return float(text)
     except ValueError:
@@ -129,7 +131,7 @@ def parse_number(text: str) -> float:
 
 
 def parse_now_playing(raw: str) -> Track | None:
-    """Turn NOW_PLAYING_SCRIPT's tab-separated line into a Track. None if the line is too short to be one."""
+    """Parse NOW_PLAYING_SCRIPT's tab-separated output into a Track, or None when it is too short."""
     fields = raw.split("\t")
     if len(fields) < REQUIRED_FIELDS:
         return None
@@ -165,7 +167,7 @@ def play(uri: str) -> None:
 
 
 def play_and_confirm(uri: str, *, timeout_s: float = DEFAULT_CONFIRM_TIMEOUT_S) -> Track:
-    """Issue the play, then read back what is actually playing. Raises if it isn't the requested URI."""
+    """Play the URI and wait until the player reports it. Raises PlayerError otherwise."""
     play(uri)
     wanted = to_uri(uri)
     deadline = time.time() + timeout_s
@@ -206,7 +208,7 @@ _last_volume = DEFAULT_UNMUTE_VOLUME
 
 
 def toggle_mute() -> bool:
-    """Returns True if now muted."""
+    """Toggle mute. Returns True when now muted."""
     global _last_volume
     current = volume()
     if current > 0:

@@ -1,9 +1,9 @@
-"""The kick's arithmetic: listener state, distance scale, bands, measured selection, and the verdict.
+"""The kick arithmetic: listener state, distance scale, bands, selection and verdict.
 
-All distances are cosine distances in the ruler's space. Bands are relative to the listener's *own* recent
-spread, because CLAP distances are compressed and a fixed threshold would mean different things to different
-listeners: rel = (d − typical step) / (far − typical step); 0 is an ordinary next song, 1 the far edge of what
-they have been playing lately.
+All distances are cosine distances between CLAP embeddings. Bands are relative to the listener's own recent
+spread, because CLAP distances are compressed and a fixed threshold would mean different things for different
+listeners: rel = (d − typical step) / (far − typical step), where 0 is an ordinary next song and 1 the far edge
+of recent listening.
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def clamp_unit(magnitude: float) -> float:
 
 
 def first_below(value: float, ceilings: tuple[tuple[str, float], ...], above: str) -> str:
-    """The label of the first ceiling the value is under, or the label for everything above them all."""
+    """Return the label of the first ceiling ``value`` is below, or ``above`` when it is below none."""
     for label, ceiling in ceilings:
         if value < ceiling:
             return label
@@ -67,16 +67,17 @@ def strength_for(magnitude: float) -> str:
 
 
 def target_for(magnitude: float) -> float:
-    """Continuous: the wind-up angle maps to a target rel, piecewise-linear through the band centers."""
+    """Map a wind-up magnitude to a target rel, piecewise-linear through the band centres."""
     return float(np.interp(clamp_unit(magnitude), TARGET_MAGNITUDES, TARGET_RELS))
 
 
 @dataclass
 class ListenerState:
-    """EWMA of the songs played, on the unit sphere: x_t = normalize(α x_{t-1} + (1−α) e_t).
+    """Exponentially weighted mean of the songs played, on the unit sphere: x_t = normalize(α x_{t-1} + (1−α) e_t).
 
-    `history` feeds the distance scale, so it holds only the songs the recommender chose: a kicked song moves the
-    state (it did play) but must not define what a "typical step" is, or the ruler ends up measuring the kicks."""
+    ``history`` feeds the distance scale and therefore holds only songs the recommender chose: a kicked song moves
+    the state but must not define the typical step.
+    """
     alpha: float = 0.7
     vector: np.ndarray | None = None
     history: list[np.ndarray] = field(default_factory=list)
@@ -97,10 +98,12 @@ class ListenerState:
         return float(1.0 - self.vector @ embedding)
 
     def scale(self) -> tuple[float, float]:
-        """(typical step, far) = median and 95th percentile of the distances from the centre of the last 20
-        Spotify-chosen plays to each of them: the same kind of yardstick every candidate is measured with (distance
-        to a mean), and one that a kick cannot move. Song-to-song pairwise distances run about twice as large as
-        distances to a mean, and using them here once made every candidate read as closer than a typical step."""
+        """Return (typical step, far): the median and 95th percentile of the distances from the mean of the last
+        SCALE_WINDOW recommender-chosen plays to each of them.
+
+        Distance to a mean is what every candidate is measured with; pairwise song-to-song distances run about
+        twice as large and would make every candidate read as closer than a typical step.
+        """
         if len(self.history) < SCALE_MIN_PLAYS:
             return DEFAULT_SCALE
         recent = np.stack(self.history[-SCALE_WINDOW:])
@@ -137,18 +140,21 @@ def measure(state: ListenerState, embeddings: list[np.ndarray]) -> list[Measured
 
 
 def choose(measured: list[Measured], target_rel: float) -> Measured | None:
-    """The candidate whose measured rel is nearest the target. The leg tells the truth because this happens *after*
-    measuring; a near-labelled song that measured far is simply a far song."""
+    """Return the candidate whose measured rel is nearest ``target_rel``, or None for an empty list.
+
+    Selection uses the measurement, not the brain's reach label.
+    """
     if not measured:
         return None
     return min(measured, key=lambda candidate: abs(candidate.rel - target_rel))
 
 
 def followed(pre: np.ndarray, kick: np.ndarray, now: np.ndarray) -> float:
-    """How far the listener state has moved along the kick, as a fraction of the kick's own displacement:
-    ((now − pre) · (kick − pre)) / |kick − pre|².
+    """Return how far the state moved along the kick, as a fraction of the kick's displacement.
 
-    0 = back where it was, 1 = sitting on the kick, negative = recoiled."""
+    Computed as ((now − pre) · (kick − pre)) / |kick − pre|²: 0 is no movement, 1 is the kick itself, negative is
+    movement away.
+    """
     displacement = kick - pre
     squared_length = float(displacement @ displacement)
     if squared_length <= DEGENERATE_KICK:

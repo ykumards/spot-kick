@@ -1,10 +1,9 @@
-"""The ruler: CLAP audio embeddings of 30-second previews, run with onnxruntime. Every distance in Spot Kick
-is measured here. The LLM never sees these vectors and cannot grade its own work.
+"""CLAP audio embeddings of 30-second previews, run with onnxruntime.
 
-Runtime needs: `clap-audio.onnx` (the HTSAT audio tower + projection, fp16, 59 MB, exported by
-`scripts/export_clap_onnx.py`) and `clap-mel.npy` (its mel filterbank) in `~/.spotkick/models/`. Previews are
-decoded with macOS's own `afconvert`, so there is nothing to brew. No torch, no transformers. Vectors are cached
-in the store, so a track is embedded once.
+Every distance in Spot Kick is measured between these vectors; the brain never sees them. The runtime needs
+``clap-audio.onnx`` (the HTSAT audio tower and projection, fp16, exported by ``scripts/export_clap_onnx.py``) and
+``clap-mel.npy`` (its mel filterbank) in ``~/.spotkick/models/``. Previews are decoded with macOS's ``afconvert``.
+Vectors are cached in the store, so a track is embedded once.
 """
 from __future__ import annotations
 
@@ -39,7 +38,7 @@ ONNX_INPUT_NAME = "input_features"
 
 
 def normalize(vector: np.ndarray) -> np.ndarray:
-    """Scale to unit length; the zero vector is returned untouched."""
+    """Scale a vector to unit length; the zero vector is returned unchanged."""
     length = np.linalg.norm(vector)
     if length > 0:
         return vector / length
@@ -51,7 +50,7 @@ def model_present(model_dir: Path = DEFAULT_DIR) -> bool:
 
 
 def download_file(url: str, destination: Path) -> None:
-    """Stream `url` into `destination` via a `.part` file, so a killed download never leaves a truncated model."""
+    """Download ``url`` to ``destination`` through a ``.part`` file, so an interruption leaves no truncated model."""
     import requests  # deferred: only needed on first run, keeps app startup fast
 
     partial = destination.with_suffix(destination.suffix + ".part")
@@ -64,7 +63,7 @@ def download_file(url: str, destination: Path) -> None:
 
 
 def ensure_model(model_dir: Path = DEFAULT_DIR, log: Callable[[str], None] = lambda message: None) -> Path:
-    """Download whichever model files are missing from `model_dir`. Returns the directory."""
+    """Download any model files missing from ``model_dir`` and return the directory."""
     model_dir.mkdir(parents=True, exist_ok=True)
     for filename in MODEL_FILES:
         destination = model_dir / filename
@@ -76,7 +75,7 @@ def ensure_model(model_dir: Path = DEFAULT_DIR, log: Callable[[str], None] = lam
 
 
 class Embedder:
-    """Lazily loads the ONNX audio tower; nothing heavy happens until the first `embed_audio`."""
+    """CLAP audio embedder. The ONNX session is loaded on the first ``embed_audio`` call."""
 
     def __init__(
         self,
@@ -104,7 +103,7 @@ class Embedder:
         return session, mel_filters
 
     def embed_audio(self, wave: np.ndarray) -> np.ndarray:
-        """Mono float32 at 48 kHz → unit vector (512). Mean of up to `n_clips` deterministic 10 s crops."""
+        """Embed mono float32 audio at 48 kHz as a unit vector, the mean over up to ``n_clips`` fixed 10 s crops."""
         session, mel_filters = self._load()
         model_input = features.input_features(wave, mel_filters, self.n_clips)
         per_clip = np.asarray(session.run(None, {ONNX_INPUT_NAME: model_input})[0], dtype=np.float32)
@@ -123,11 +122,11 @@ AFCONVERT_TIMEOUT_S = 60
 
 
 def decode(raw: bytes) -> np.ndarray:
-    """m4a bytes → mono float32 at 48 kHz, via macOS's `afconvert` (ships with the system).
+    """Decode m4a bytes to mono float32 at 48 kHz with macOS's ``afconvert``.
 
-    Channels are mixed here, not by afconvert: its `-c 1` sums them, ffmpeg's `-ac 1` (which every stored embedding
-    and the reference implementation used) mixes stereo as (L + R) / √2, and CLAP is not level-invariant, so the
-    same convention is kept to the bit."""
+    Channels are mixed here rather than by afconvert: its ``-c 1`` sums them, whereas the stored embeddings and the
+    reference implementation used ffmpeg's (L + R) / √2. CLAP is not level-invariant, so the convention is kept.
+    """
     with tempfile.TemporaryDirectory() as scratch_dir:
         source = Path(scratch_dir) / "preview.m4a"
         target = Path(scratch_dir) / "preview.wav"
@@ -141,7 +140,7 @@ def decode(raw: bytes) -> np.ndarray:
 
 
 def wav_samples(wav: bytes) -> tuple[int, np.ndarray]:
-    """(channel count, interleaved float32 samples) of a WAVE file, found by walking the RIFF chunks."""
+    """Return (channel count, interleaved float32 samples) from a WAVE file by walking its RIFF chunks."""
     channels = 1
     offset = 12
     while offset + 8 <= len(wav):
@@ -156,7 +155,7 @@ def wav_samples(wav: bytes) -> tuple[int, np.ndarray]:
 
 
 def embed_track(store: Store, embedder: Embedder, track: Track) -> np.ndarray | None:
-    """Vector for a store Track: cached in `embeddings`, else download the preview, embed, cache. None if no preview."""
+    """Return the track's embedding, computing and caching it from the preview if needed; None without a preview."""
     cached = store.embedding(track.id)
     if cached is not None:
         return cached

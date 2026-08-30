@@ -1,7 +1,7 @@
-"""(artist, title) → a Spotify track URI we can trust.
+"""Resolution of (artist, title) to a Spotify track URI.
 
-The brain names songs; Spotify's search names ids. The first hit whose artist and title resemble what was asked
-for wins; a hit for another song would put the wrong audio under the ruler, so no match means no track.
+The first search hit whose artist and title match the request is used. A hit for a different song would be
+measured as the wrong audio, so no match means no track.
 """
 from __future__ import annotations
 
@@ -22,14 +22,14 @@ def ignore_log(message: str) -> None:
 
 
 def normalize(name: str) -> str:
-    """Lower-case ASCII words: accents dropped, so Spotify's 'Nètsanèt' matches the brain's 'Netsanet'."""
+    """Normalise a name to lower-case ASCII words with accents removed."""
     decomposed = unicodedata.normalize("NFKD", name)
     ascii_only = "".join(char for char in decomposed if not unicodedata.combining(char))
     return normalize_name(ascii_only)
 
 
 def names_match(want: str, got: str) -> bool:
-    """Loose containment either way, or the first few words of what we wanted appear in what Spotify reports."""
+    """Return True when either name contains the other, or the first words of ``want`` appear in ``got``."""
     wanted = normalize(want)
     reported = normalize(got)
     if not wanted or not reported:
@@ -46,8 +46,10 @@ class Resolved:
 
 
 def resolve(artist: str, title: str, api: SpotifyAPI, *, log: Logger = ignore_log) -> Resolved | None:
-    """Spotify's first hit that is actually this song, or None. Spotify being unreachable is logged and counts as
-    no track — the candidate is skipped, the kick goes on."""
+    """Return the first Spotify hit that matches the song, or None.
+
+    An unreachable Spotify is logged and treated as no match.
+    """
     try:
         hits = api.search_tracks(artist, title)
     except SpotifyAPIError as error:

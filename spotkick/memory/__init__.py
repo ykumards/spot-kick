@@ -1,1 +1,1 @@
-"""memory"""
+"""Persistent storage."""

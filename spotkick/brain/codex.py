@@ -1,4 +1,4 @@
-"""Codex CLI backend: `codex exec --output-schema`, using whatever login the CLI has. No SDK, no key."""
+"""Codex CLI backend: ``codex exec --output-schema``, using the CLI's own login."""
 from __future__ import annotations
 
 import json
@@ -17,7 +17,7 @@ OUTPUT_PREVIEW_CHARS = 200
 
 
 class Codex:
-    """The default brain: OpenAI's models through the Codex CLI."""
+    """Brain backend using the Codex CLI."""
 
     name = "codex"
 
@@ -27,7 +27,7 @@ class Codex:
         self.binary = binary
 
     def base_command(self) -> list[str]:
-        """The `codex exec` invocation: sandboxed read-only, our model, our reasoning effort."""
+        """Return the ``codex exec`` argv: read-only sandbox, the configured model and reasoning effort."""
         return [
             self.binary,
             "exec",
