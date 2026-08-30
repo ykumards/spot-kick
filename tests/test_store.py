@@ -15,6 +15,24 @@ def store():
     return Store(":memory:")
 
 
+def add_kick_candidate(
+    store: Store,
+    track,
+    *,
+    direction: str = "brazilian soul",
+    why: str = "",
+    distance: float = 0.5,
+    rel: float = 1.2,
+    band: str = "boot",
+) -> int:
+    candidate_id = store.add_candidates(
+        f"kick-{track.id}",
+        [{"reach": "far", "direction": direction, "artist": track.artist, "title": track.title, "why": why}],
+    )[0]
+    store.update_candidate(candidate_id, track_id=track.id, distance=distance, rel=rel, band=band)
+    return candidate_id
+
+
 def test_track_key_normalizes():
     assert track_key("Fela Kuti", "Water No Get Enemy") == track_key("fela  kuti", "Water no get enemy!")
 
@@ -45,18 +63,13 @@ def test_seen_covers_plays_kicks_and_picks(store):
     store.add_event("play", played.id, "spotify")
     assert store.seen("tinariwen", "amassakoul")
     kicked = store.upsert_track("Ed Motta", "Manuel")
+    candidate_id = add_kick_candidate(store, kicked)
     store.add_kick(
+        candidate_id=candidate_id,
         strength="boot",
         magnitude=0.9,
         target_rel=1.3,
-        direction="brazilian soul",
-        why="",
-        track_id=kicked.id,
-        distance=0.5,
-        rel=1.2,
-        band="boot",
         pre_state=np.zeros(4),
-        kick_vec=np.ones(4),
     )
     assert store.seen("Ed Motta", "Manuel")
     assert not store.seen("Nobody", "Nothing")
@@ -86,18 +99,13 @@ def test_context_queries(store):
     assert store.rejected() == ["Stereolab — Ping Pong"]
 
     kicked = store.upsert_track("Ed Motta", "Manuel")
+    candidate_id = add_kick_candidate(store, kicked, distance=0.4, rel=0.7, band="kick")
     kick_id = store.add_kick(
+        candidate_id=candidate_id,
         strength="kick",
         magnitude=0.5,
         target_rel=0.75,
-        direction="brazilian soul",
-        why="",
-        track_id=kicked.id,
-        distance=0.4,
-        rel=0.7,
-        band="kick",
-        pre_state=None,
-        kick_vec=None,
+        pre_state=np.zeros(4),
         t=now - 50,
     )
     store.add_event("kick", kicked.id, "kick", kick_id=kick_id, t=now - 50)
@@ -131,26 +139,32 @@ def test_candidates_lifecycle(store):
     assert store.counts()["candidates"] == 3
 
 
-def test_migration_drops_dead_columns_and_tables_and_keeps_rows(tmp_path):
-    path = tmp_path / "old.db"
-    Store(str(path)).close()
-    old_db = sqlite3.connect(path)
-    old_db.executescript(
-        "ALTER TABLE kicks ADD COLUMN dose INTEGER NOT NULL DEFAULT 1;"
-        "ALTER TABLE candidates ADD COLUMN purpose TEXT NOT NULL DEFAULT 'pool';"
-        "ALTER TABLE candidates DROP COLUMN lean;"
-        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
-        "INSERT INTO tracks(artist,title,key,created_at) VALUES ('A','1','a|1',1);"
-        "INSERT INTO candidates(t,set_id,artist,title,purpose) VALUES (1,'s','A','1','follow');"
-    )
-    old_db.commit()
-    old_db.close()
-    migrated = Store(str(path))
-    assert "dose" not in migrated.columns("kicks")
-    assert "purpose" not in migrated.columns("candidates")
-    assert "lean" in migrated.columns("candidates")
-    assert migrated.count_rows("candidates") == 1
-    assert migrated._one("SELECT name FROM sqlite_master WHERE name='meta'") is None
+def test_kick_schema_links_request_to_candidate_and_events(store):
+    assert store.columns("kicks") == {
+        "id", "t", "candidate_id", "selected_by", "nearest_candidate_id", "minime_score", "strength",
+        "magnitude", "target_rel", "pre_state", "followed", "verdict", "n_since",
+    }
+    assert "kick_id" not in store.columns("candidates")
+    kicked = store.upsert_track("Ed Motta", "Manuel")
+    kick_vector = np.ones(4, dtype=np.float32)
+    store.put_embedding(kicked.id, kick_vector, "clap")
+    candidate_id = add_kick_candidate(store, kicked, distance=0.4, rel=0.7, band="kick")
+    kick_id = store.add_kick(candidate_id=candidate_id, selected_by="mini-me",
+                             nearest_candidate_id=candidate_id, minime_score=0.73, strength="kick", magnitude=0.5,
+                             target_rel=0.75, pre_state=np.zeros(4))
+    store.update_candidate(candidate_id, chosen=1)
+    store.add_event("kick", kicked.id, "kick", kick_id=kick_id, popularity=42)
+
+    kick = store.kick(kick_id)
+    assert kick["candidate_id"] == candidate_id
+    assert kick["selected_by"] == "mini-me"
+    assert kick["nearest_candidate_id"] == candidate_id
+    assert kick["minime_score"] == 0.73
+    assert kick["track_id"] == kicked.id
+    assert kick["direction"] == "brazilian soul"
+    assert kick["distance"] == 0.4
+    assert kick["popularity"] == 42
+    assert np.array_equal(kick["kick_vec"], kick_vector)
 
 
 def test_persists_to_disk(tmp_path):
@@ -163,12 +177,35 @@ def test_persists_to_disk(tmp_path):
     assert reader.counts() == {"tracks": 1, "embeddings": 0, "events": 1, "kicks": 0, "candidates": 0}
 
 
+def test_adds_selection_audit_columns_to_the_previous_v0_schema(tmp_path):
+    path = tmp_path / "previous.db"
+    writer = Store(path)
+    kicked = writer.upsert_track("Ed Motta", "Manuel")
+    candidate_id = add_kick_candidate(writer, kicked)
+    kick_id = writer.add_kick(candidate_id=candidate_id, strength="kick", magnitude=0.5, target_rel=0.75,
+                              pre_state=np.zeros(4))
+    writer.close()
+
+    with sqlite3.connect(path) as database:
+        database.execute("ALTER TABLE kicks DROP COLUMN minime_score")
+        database.execute("ALTER TABLE kicks DROP COLUMN nearest_candidate_id")
+        database.execute("ALTER TABLE kicks DROP COLUMN selected_by")
+
+    upgraded = Store(path)
+    assert {"selected_by", "nearest_candidate_id", "minime_score"} <= upgraded.columns("kicks")
+    legacy = upgraded.kick(kick_id)
+    assert legacy is not None
+    assert legacy["selected_by"] == "legacy"
+    assert legacy["nearest_candidate_id"] is None and legacy["minime_score"] is None
+    assert upgraded.recent_kicks()[0]["selection_changed"] is None
+
+
 def test_recent_kicks_and_spotify_play_count(store):
     kicked = store.upsert_track("Ed Motta", "Manuel")
     other = store.upsert_track("Azymuth", "Partido Alto")
-    kick_id = store.add_kick(strength="boot", magnitude=0.9, target_rel=1.3, direction="brazilian soul", why="",
-                             track_id=kicked.id, distance=0.5, rel=1.2, band="boot", pre_state=None,
-                             kick_vec=None)
+    candidate_id = add_kick_candidate(store, kicked)
+    kick_id = store.add_kick(candidate_id=candidate_id, strength="boot", magnitude=0.9, target_rel=1.3,
+                             pre_state=np.zeros(4))
     store.add_event("play", kicked.id, "kick", kick_id=kick_id)          # the kicked track
     store.add_event("play", other.id, "spotify")
     store.add_event("play", other.id, "spotify")
@@ -177,5 +214,7 @@ def test_recent_kicks_and_spotify_play_count(store):
     recent = store.recent_kicks()
     assert [kick["artist"] for kick in recent] == ["Ed Motta"]
     assert recent[0]["target_rel"] == 1.3
+    assert recent[0]["selected_by"] == "nearest"
+    assert recent[0]["selection_changed"] == 0
     assert recent[0]["verdict"] == "followed"
     assert recent[0]["n_since"] == 2

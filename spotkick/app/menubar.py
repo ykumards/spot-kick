@@ -262,6 +262,15 @@ class Api:
         self.observe()
         return {key: jsonable(item) for key, item in result.items()}
 
+    def cancel_kick(self) -> bool:
+        """Cancel the active measurement when the listener changed Spotify themselves."""
+        if self.session is None:
+            raise RuntimeError(self.error or "still loading")
+        with self._observing:
+            cancelled = self.session.cancel_active_kick()
+        self.observe()
+        return cancelled
+
     def transport(self, command: str) -> dict:
         from ..player import spotify  # deferred: see player_state
 
@@ -298,6 +307,14 @@ class Api:
                 self.session.invalidate_pool()
         return self.cfg.lean
 
+    def set_minime(self, on: bool) -> bool:
+        """Turn Mini-Me's say in the kick on or off; remembered in config.toml. The model keeps learning either way."""
+        on = bool(on)
+        if on != self.cfg.minime:
+            self.cfg.minime = on
+            config.save_setting("minime", on)
+        return self.cfg.minime
+
     def set_brain(self, name: str) -> str:
         """Switch the brain backend, persist the choice to config.toml, and drop the previous backend's pool."""
         from ..brain.llm import make_backend  # deferred: see load_session
@@ -324,8 +341,8 @@ class Bridge(NSObject):
     """WKScriptMessageHandler that runs each JS call on ``Api`` off the main thread and answers via ``__resolve``."""
 
     ALLOWED_METHODS = frozenset(
-        {"status", "kick", "kick_pick", "transport", "love", "set_lean", "set_brain", "set_spotify_credentials",
-         "stats", "quit"}
+        {"status", "kick", "kick_pick", "cancel_kick", "transport", "love", "set_lean", "set_minime", "set_brain",
+         "set_spotify_credentials", "stats", "quit"}
     )
 
     def initWithApi_webview_(self, api: Api, webview):

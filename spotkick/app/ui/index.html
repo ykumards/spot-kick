@@ -12,7 +12,7 @@
   html,body { margin:0; height:100%; background:#fff; font-family:-apple-system, "SF Pro Text", system-ui, sans-serif; color:var(--ink); user-select:none; -webkit-user-select:none; overflow:hidden; }
   .marker { font-family:var(--marker); }
 
-  /* ---- the stage: title, meter ring, the leg, the wind-up bubble, the ball, the burst */
+  /* ---- the stage: title, meter ring, the leg, the wind-up bubble and the ball */
   #stage { position:relative; width:100%; height:268px; overflow:hidden; background:var(--paper); }
   #title { position:absolute; left:0; right:0; top:8px; text-align:center; font-size:26px; letter-spacing:1px; font-weight:700; }
   #label { position:absolute; left:0; right:0; top:40px; text-align:center; font-size:12px; letter-spacing:.4px; color:var(--muted); }
@@ -30,24 +30,34 @@
   #pointerText { position:absolute; left:0; top:0; z-index:3; display:none; pointer-events:none; font-size:14px; letter-spacing:.4px; padding:4px 11px; border:2px solid #333; border-radius:999px; background:#fff; color:#222; white-space:nowrap; box-shadow:2px 2px 0 #333; }
   #pointerText.on { display:block; }
   #pointerText.tap { background:var(--tap-soft); } #pointerText.kick { background:var(--kick-soft); } #pointerText.boot { background:var(--boot-soft); }
-  #burst { position:absolute; left:50%; top:190px; transform:translate(-50%,-50%) rotate(-8deg) scale(0); font-size:44px; font-weight:900; color:#fff; -webkit-text-stroke:3px #111; text-shadow:4px 4px 0 #111; pointer-events:none; transition:transform .12s cubic-bezier(.2,1.6,.4,1); }
-  #burst.show { transform:translate(-50%,-50%) rotate(-8deg) scale(1); }
   #whoosh { position:absolute; left:55%; top:230px; font-size:48px; opacity:0; transform:scaleX(2.5); pointer-events:none; }
-  #ball { position:absolute; width:56px; height:56px; left:0; top:0; pointer-events:none; will-change:transform; font-size:50px; line-height:56px; text-align:center; }
-  #ball img { display:none; width:76px; height:76px; margin:-10px; clip-path:circle(27px at 50% 50%); }
+  #ball { position:absolute; width:48px; height:48px; left:0; top:0; pointer-events:none; will-change:transform; font-size:42px; line-height:48px; text-align:center; }
+  #ball img { display:none; width:65px; height:65px; margin:-8px; clip-path:circle(23px at 50% 50%); }
   body.pirate #ball img { display:block; } body.pirate #ball span { display:none; }
-  #leanBtn { position:absolute; right:16px; top:112px; font-size:15px; letter-spacing:.4px; padding:7px 16px; border:2px solid #333; border-radius:999px; background:#fff; color:#222; cursor:pointer; box-shadow:2px 2px 0 #333; }
+  #leanBtn { position:absolute; right:16px; top:116px; font-size:14px; letter-spacing:.4px; padding:5px 14px; border:2px solid #333; border-radius:999px; background:#fff; color:#222; cursor:pointer; box-shadow:2px 2px 0 #333; }
   #leanBtn:focus { outline:none; }
-  /* Mini-Me, teased: same pill, greyed and inert, under the lean */
-  #miniBtn { position:absolute; right:16px; top:158px; font-size:15px; letter-spacing:.4px; padding:6px 16px; border:2px dashed #c9c3b6; border-radius:999px; background:transparent; color:#b5ad9e; cursor:default; display:flex; flex-direction:column; align-items:center; line-height:1.05; }
-  #miniBtn span { font-family:-apple-system, system-ui, sans-serif; font-size:9px; letter-spacing:.6px; text-transform:uppercase; color:#c4bdae; margin-top:2px; }
+  /* Mini-Me: a toggle pill under the lean, with a small info dot beside it */
+  #miniWrap { position:absolute; right:16px; top:166px; display:flex; align-items:center; gap:6px; }
+  #miniBtn { font-size:14px; letter-spacing:.4px; padding:4px 12px; border:2px solid #333; border-radius:999px; background:#fff; color:#222; cursor:pointer; display:flex; flex-direction:column; align-items:center; line-height:1.05; box-shadow:2px 2px 0 #333; }
+  #miniBtn:focus { outline:none; } #miniBtn:active { transform:translate(1px,1px); box-shadow:1px 1px 0 #333; }
+  #miniBtn:disabled { opacity:.5; cursor:default; }
+  #miniBtn.on { background:#f3b13f; border-color:#8a5a00; box-shadow:2px 2px 0 #8a5a00; }
+  #miniBtn.learning { border-style:dashed; }
+  #miniBtn span { font-family:-apple-system, system-ui, sans-serif; font-size:8px; letter-spacing:.6px; text-transform:uppercase; color:#8a8274; margin-top:2px; }
+  #miniBtn.on span { color:#5a3d00; }
+  #miniInfo { width:18px; height:18px; border-radius:50%; border:1.5px solid #b5ad9e; background:transparent; color:#8a8274; font:italic 600 11px Georgia, serif; cursor:pointer; padding:0; line-height:1; }
+  #miniInfo:hover { border-color:#333; color:#222; } #miniInfo:focus { outline:none; }
+  /* Mini-Me's score on a bench row: a heat pill, warm when it thinks you keep the song */
+  .keep { flex:none; font-size:11px; font-variant-numeric:tabular-nums; padding:1px 7px; border-radius:999px; color:#333; }
   #leanBtn:active { transform:translate(1px,1px); box-shadow:1px 1px 0 #333; }
   #leanBtn.set { background:var(--spotify); border-color:#137a3a; color:#fff; box-shadow:2px 2px 0 #137a3a; }
 
   /* ---- the panel under the stage: the kick card, now playing, the hint row */
   #panel { display:flex; flex-direction:column; gap:12px; padding:14px 16px 12px; height:calc(100% - 280px); box-sizing:border-box; border-top:1px solid var(--line); background:#fff; font-size:13px; line-height:1.4; color:#222; }
   #content { flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column; justify-content:flex-start; }   /* top-anchored: the headline never crops */
-  .head { font-family:var(--marker); font-size:26px; line-height:1.15; margin:2px 0 4px; letter-spacing:.4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .head { font-family:var(--marker); font-size:26px; line-height:1.25; margin:0 0 3px; padding:2px 0 1px; letter-spacing:.4px; white-space:nowrap; overflow:visible; text-overflow:clip; }
+  .kickTop { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  .kickTop .head { flex:1; min-width:0; }
   .head.returned { color:var(--returned); } .head.bent { color:var(--bent); } .head.followed { color:var(--followed); } .head.wait { color:#333; } .head.wide { color:var(--followed); }
   .sub { font-size:13px; color:#666; } .sub + .sub { margin-top:8px; }
   .sub b { color:#222; font-weight:600; }
@@ -109,9 +119,11 @@
   .step.now { color:#222; } .step.now .dot { background:var(--kick); }            /* playing now: full contrast */
   .step.now b { color:#111; }
   .step .along { flex:none; font-size:11px; color:#888; font-variant-numeric:tabular-nums; }
+  .kickReset { flex:none; margin-top:5px; padding:4px 10px; border:1px solid var(--line); border-radius:999px; background:#fff; color:#777; font:inherit; font-size:11px; cursor:pointer; }
+  .kickReset:hover { color:#222; border-color:#bbb; }
   /* markers are positioned on [0,100%] of the ruler and are up to 18px wide, so the ruler is inset by that much */
   .ruler { position:relative; height:26px; margin:2px 9px 2px; }
-  .traj + .ruler { margin-top:16px; }   /* breathing room under the timeline, which has no notes row above the ruler */
+  .traj + .ruler { margin-top:8px; }   /* leave room under the timeline while keeping the axis inside the card */
   .ruler .track { position:absolute; left:0; right:0; top:11px; height:6px; border-radius:3px;
     background:linear-gradient(90deg, var(--tap-soft) 0%, var(--tap-soft) 42.5%, var(--kick-soft) 42.5%, var(--kick-soft) 82.5%, var(--boot-soft) 82.5%, var(--boot-soft) 100%); }
   .ruler .tick { position:absolute; top:4px; width:2px; height:20px; background:#bbb; transform:translateX(-1px); }
@@ -121,8 +133,8 @@
   .rulerNotes { position:relative; height:15px; margin:6px 9px 0; font-size:12px; color:#333; }
   .rulerNotes span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
   .rulerNotes span.first { transform:none; } .rulerNotes span.last { transform:translateX(-100%); }
-  .rulerAxis { position:relative; height:14px; font-size:10px; color:#999; margin:0 9px 4px; }
-  .rulerAxis span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
+  .rulerAxis { position:relative; height:20px; font-size:10px; color:#999; margin:3px 9px 4px; }
+  .rulerAxis span { position:absolute; top:6px; transform:translateX(-50%); white-space:nowrap; }
   .rulerAxis span.first { transform:none; } .rulerAxis span.last { transform:translateX(-100%); }
   .bench { display:flex; flex-direction:column; gap:5px; margin-top:8px; cursor:pointer; }
   .benchRow { display:flex; align-items:center; gap:8px; font-size:12px; min-width:0; }
@@ -135,7 +147,7 @@
 
   /* ---- full-height screens over the panel: settings, lean, bench, stats */
   .screen { display:none; position:fixed; inset:0; background:var(--paper); z-index:10; flex-direction:column; font-size:13px; color:#222; }
-  body.settings #settings, body.stats #stats, body.lean #lean, body.pool #pool { display:flex; }
+  body.settings #settings, body.stats #stats, body.lean #lean, body.pool #pool, body.minime #minime { display:flex; }
   .screen .top { display:flex; align-items:center; gap:10px; padding:16px 16px 8px; }
   .screen .back { width:30px; height:30px; border:0; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.12); cursor:pointer; display:flex; align-items:center; justify-content:center; color:#222; padding:0; }
   .screen .back svg { width:16px; height:16px; } .screen .back:active { background:#eee; }
@@ -192,9 +204,11 @@
   <div class="marker" id="pointerText"></div>
   <div id="ball"><span>⚽</span><img src="ball.png" alt=""></div>
   <button id="leanBtn" class="marker" onclick="toggleLean()" title="Narrow the search: genres, moods, your own words. The kick strength still varies inside it.">lean</button>
-  <button id="miniBtn" class="marker" disabled title="Mini-Me: a small you that kicks for you while you listen. Coming soon.">mini-me<span>coming soon</span></button>
+  <div id="miniWrap">
+    <button id="miniBtn" class="marker" onclick="toggleMiniMe()" title="Mini-Me: chooses, among the bench picks that land where you aimed, the one you are most likely to keep">mini-me<span id="miniState">off</span></button>
+    <button id="miniInfo" onclick="toggleMiniInfo()" title="what Mini-Me does">i</button>
+  </div>
   <div id="whoosh">≋</div>
-  <div id="burst">THWACK</div>
 </div>
 <div id="settings" class="screen">
   <div class="top"><button class="back" data-icon="back" onclick="toggleSettings()" title="back"></button><h1>Settings</h1></div>
@@ -233,6 +247,19 @@
     <div class="card"><h2>Your own words</h2>
       <input type="text" id="leanText" placeholder="a language, an era, an instrument…" autocomplete="off" spellcheck="false">
       <p>Everything ticked here goes to the brain with every ask, and every pick stays inside it. The kick strength still varies within. Up to 10 in all; changing it drops the current picks.</p>
+    </div>
+  </div>
+</div>
+<div id="minime" class="screen">
+  <div class="top"><button class="back" data-icon="back" onclick="toggleMiniInfo()" title="back"></button><h1>Mini-Me</h1></div>
+  <div class="body">
+    <div class="card"><h2>What it does</h2>
+      <p style="margin:0 0 8px">A small model of <b>you</b>: for any song, how likely you are to let it play through. It is a logistic regression on the same audio embedding the ruler uses, so it scores how a song <i>sounds</i>, not who made it.</p>
+      <p style="margin:0 0 8px">It learns from your own log: a song kept to the end is a yes, a love is a loud yes, a song you left in the first 30% is a no — louder when you kicked away from it. Leaving a song halfway says nothing; wanting a change is not disliking.</p>
+      <p style="margin:0">When it is on, a kick still lands where you aimed. Among the bench picks that land there, Mini-Me sends on the one you are most likely to keep, and the bench shows its score on every sub. When it is off, the pick nearest your aim plays.</p>
+    </div>
+    <div class="card"><h2>Right now <span class="state" id="miniStatus"></span></h2><div id="miniDetail" class="empty"></div>
+      <div class="actions" style="margin-top:8px"><button onclick="toggleMiniMe()" id="miniInfoToggle">turn on</button></div>
     </div>
   </div>
 </div>
@@ -322,7 +349,7 @@ const I = {
 };
 document.querySelectorAll('[data-icon]').forEach(node => { node.innerHTML = I[node.dataset.icon]; });
 
-const SCREENS = ['settings', 'stats', 'lean', 'pool'];
+const SCREENS = ['settings', 'stats', 'lean', 'pool', 'minime'];
 function screenOpen(name) { return document.body.classList.contains(name); }
 // One screen at a time over the panel; null closes whichever is open.
 function showScreen(name) {
@@ -352,21 +379,14 @@ paintIcons();
 
 // ---- 4. the stage: the leg you wind back, and the ball it kicks ------------------------------------------------------
 const MAX_ANGLE = 110;
-const leg = el('leg'), label = el('label'), burst = el('burst'), pointerText = el('pointerText');
+const leg = el('leg'), label = el('label'), pointerText = el('pointerText');
 const whoosh = el('whoosh'), meter = el('meter'), stage = el('stage'), ball = el('ball');
-
-// A word stamped over the stage for a moment: the strength on release, the shot when the ball lands, WIDE on a miss.
-function flashBurst(text, ms = 900) {
-  burst.textContent = text;
-  burst.classList.add('show');
-  setTimeout(() => burst.classList.remove('show'), ms);
-}
 
 // The ball rests at the toe; the swing launches it; it ricochets while the brain thinks; then it rolls home.
 const B = { x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0, mode: 'rest', home: {x: 0, y: 0}, bounces: 0 };
-const BALL_SIZE = 56, BALL_BOUNCE = 0.92;
+const BALL_SIZE = 48, BALL_BOUNCE = 0.92;
 let whenBallRests = null;   // runs once, when the returning ball settles at the toe: the verdict is read off a still ball
-function ballHome() { B.home = { x: stage.clientWidth / 2 + 12, y: stage.clientHeight - 78 }; }
+function ballHome() { B.home = { x: stage.clientWidth / 2 + 12, y: stage.clientHeight - 70 }; }
 function ballDraw() { ball.style.transform = `translate(${B.x}px, ${B.y}px) rotate(${B.rot}deg)`; }
 function ballRest() {
   ballHome();
@@ -481,7 +501,6 @@ leg.addEventListener('pointerup', endDrag);
 leg.addEventListener('pointercancel', endDrag);
 
 const SWING_MS = 380, SWING_THROUGH_DEG = 28;
-const RELEASE_WORD = { tap: 'tap', kick: 'KICK!', boot: 'BOOOT!!' };
 function release() {
   if (angle < POINTER_MIN_ANGLE) { setAngle(0); return; }
   const magnitude = angle / MAX_ANGLE, strength = strengthOf(magnitude);
@@ -498,7 +517,6 @@ function release() {
       requestAnimationFrame(swing);
       return;
     }
-    flashBurst(RELEASE_WORD[strength], 700);
     setTimeout(() => { whoosh.style.opacity = 0; setAngle(0); }, 700);
     kick(magnitude, strength);
   })(started);
@@ -518,7 +536,6 @@ function stopKicking() { clearInterval(kickingTimer); kickingTimer = null; }
 function justLanded(kick) { return {...kick, n_since: 0, chosen: [], verdict: 'listening'}; }
 const MISS_PINNED_MS = 10000;
 function showMiss(error) {
-  flashBurst('WIDE');
   pinCard(`<div class="head wide">Didn't land</div><div class="sub">${esc(String(error).slice(0, 160))}</div>`, MISS_PINNED_MS);
 }
 function pinCard(html, ms = null) {
@@ -536,7 +553,6 @@ async function kick(magnitude, strength) {
   ui.pinned = null;
   setContent(`<div class="head wait">Kicked</div><div class="sub">${kickLine(landed)}</div>`);
   whenBallRests = () => {   // the verdict is read off a still ball
-    flashBurst((shotWord(landed) || 'KICKED').toUpperCase());
     setContent(kickCard(landed));
     doneKicking();
   };
@@ -551,7 +567,6 @@ async function sendOn(candId) {
   setContent(`<div class="head wait">Sending on…</div><div class="sub">the sub you pointed at</div>`);
   try {
     const landed = justLanded(await api.kick_pick(candId));
-    flashBurst('SUB ON');
     setContent(kickCard(landed));
   } catch (error) { showMiss(error); }
   doneKicking();
@@ -591,15 +606,6 @@ function ruler(kick, withNotes = true) {
       ${aimed}${pickDots}<div class="ball" style="left:${rulerX(kick.rel)}" title="fell ${kick.rel.toFixed(2)}">⚽</div></div>
     <div class="rulerAxis"><span class="first" style="left:0">nearer</span><span style="left:${rulerX(0)}">typical step ${ui.scale.typical_step.toFixed(2)}</span><span style="left:${rulerX(1)}">far ${ui.scale.far.toFixed(2)}</span><span class="last" style="left:100%">beyond</span></div>`;
 }
-// The shot, in football: how far the ball fell from where it was aimed, on the listener's own scale.
-const SHOT_CEILINGS = [[0.15, 'Goal!'], [0.35, 'Off the post'], [0.7, 'Miss']];
-const SHOT_WAY_OFF = 'Way off';
-function shotWord(kick) {
-  if (kick.target_rel == null) return null;
-  const error = Math.abs(kick.rel - kick.target_rel);
-  for (const [ceiling, word] of SHOT_CEILINGS) if (error < ceiling) return word;
-  return SHOT_WAY_OFF;
-}
 function followedLine(kick) {
   const followed = kick.followed || 0;
   if (followed < 0) return 'Spotify went the <b>other way</b>';
@@ -631,7 +637,8 @@ function trajectory(kick) {
   const judged = kick.n_since >= rules.songs_to_judge;
   // The row of the song playing now carries the amber dot; the one after it just says it will play next.
   const playingIndex = chosen.length;   // 0 = your kick is playing, 1 = Spotify's 1st pick is, ...
-  const lines = [step(playingIndex === 0 ? 'now' : 'done', 'Your kick:', `<b>${esc(kick.track.artist)} — ${esc(kick.track.title)}</b>`)];
+  const keep = kick.keep == null ? '' : `<span class="along" title="Mini-Me: how likely you are to keep this one, learned from your own plays">${Math.round(100 * kick.keep)}% keep</span>`;
+  const lines = [step(playingIndex === 0 ? 'now' : 'done', 'Your kick:', `<b>${esc(kick.track.artist)} — ${esc(kick.track.title)}</b>`, keep)];
   for (let i = 0; i < rules.songs_to_judge; i++) {
     const pick = chosen[i];
     if (pick) {
@@ -648,14 +655,29 @@ function trajectory(kick) {
     : step('', `Then the verdict: did Spotify follow your kick?`));
   return `<div class="traj">${lines.join('')}</div>`;
 }
+function kickReset() {
+  return `<button class="kickReset" onclick="cancelKick()" title="This playback is not related to the kick">reset</button>`;
+}
+function kickTop(headline, cls) {
+  return `<div class="kickTop"><div class="head ${cls}">${esc(headline)}</div>${kickReset()}</div>`;
+}
 function kickCard(kick) {
   if (kick.n_since >= rules.songs_to_judge) {
     const headline = VERDICT_WORDS[kick.verdict] || kick.verdict;
-    return `<div class="head ${esc(kick.verdict)}">${esc(headline)}</div>${trajectory(kick)}${ruler(kick, false)}`;
+    return `${kickTop(headline, esc(kick.verdict))}${trajectory(kick)}${ruler(kick, false)}`;
   }
   const chosen = kick.chosen || [];
-  const headline = chosen.length === 0 ? (shotWord(kick) || 'Kicked') : `Spotify picked ${chosen.length} of ${rules.songs_to_judge}`;
-  return `<div class="head wait">${headline}</div>${trajectory(kick)}${ruler(kick, false)}`;
+  const headline = chosen.length === 0 ? 'Kicked' : `Spotify picked ${chosen.length} of ${rules.songs_to_judge}`;
+  return `${kickTop(headline, 'wait')}${trajectory(kick)}${ruler(kick, false)}`;
+}
+
+async function cancelKick() {
+  if (ui.busy) return;
+  try {
+    await api.cancel_kick();
+    ui.pinned = null;
+    await tick();
+  } catch (error) { showLog(error); }
 }
 
 // The bench: picks the brain named and we measured before you kicked, so the kick itself is instant. Per band,
@@ -674,7 +696,7 @@ function benchRow(band, entry, lean) {
   }
   const more = entry.picks.length > 1 ? `<span class="n">+${entry.picks.length - 1}</span>` : '';
   const finding = entry.state === 'building' ? '<span class="n pulse">more warming up…</span>' : '';
-  return `<div class="benchRow pick" onclick="event.stopPropagation(); sendOn(${Number(first.cand_id)})" title="send this one on now"><span class="chip ${band}">${band}</span><span class="who">${esc(first.artist)} — ${esc(first.title)}</span>${more}${finding}</div>`;
+  return `<div class="benchRow pick" onclick="event.stopPropagation(); sendOn(${Number(first.cand_id)})" title="send this one on now"><span class="chip ${band}">${band}</span><span class="who">${esc(first.artist)} — ${esc(first.title)}</span>${keepPill(first.keep)}${more}${finding}</div>`;
 }
 function benchBlock(pool) {
   const bench = pool.bench || {};
@@ -724,6 +746,48 @@ function renderCard(status) {
   setContent(status.kick ? kickCard(status.kick) : idleCard(status));
 }
 
+// ---- Mini-Me: the taste model's say in the kick. The model learns either way; the toggle is whether it chooses.
+let miniMe = { on: false, ready: false, examples: 0, kept: 0, rejected: 0, needed: 20, known: false };
+let miniMeSetAt = 0;   // when the listener last toggled; a status requested before that must not repaint the pill
+function paintMiniMe(status, requestedAt = Infinity) {
+  if (status) {
+    if (requestedAt < miniMeSetAt) return;       // stale poll, in flight across the toggle
+    miniMe = { ...status, known: true };
+  }
+  const button = el('miniBtn');
+  button.disabled = !miniMe.known;
+  if (!miniMe.known) { el('miniState').textContent = '…'; return; }
+  button.classList.toggle('on', miniMe.on);
+  button.classList.toggle('learning', miniMe.on && !miniMe.ready);
+  el('miniState').textContent = !miniMe.on ? 'off' : (miniMe.ready ? 'on' : 'learning');
+  if (screenOpen('minime')) paintMiniInfo();
+}
+async function toggleMiniMe() {
+  if (!miniMe.known) return;
+  miniMeSetAt = Date.now();
+  try { miniMe.on = await api.set_minime(!miniMe.on); paintMiniMe(); }
+  catch (error) { showLog(error); }
+}
+function paintMiniInfo() {
+  el('miniStatus').textContent = !miniMe.on ? 'off' : (miniMe.ready ? 'on and choosing' : 'on, still learning');
+  const learned = `${miniMe.examples} plays learned from: ${miniMe.kept} kept, ${miniMe.rejected} left early.`;
+  const missing = Math.max(0, miniMe.needed - miniMe.examples);
+  const readiness = miniMe.ready ? 'Enough to have an opinion.'
+    : (missing > 0 ? `${missing} more labelled plays before it has an opinion.` : 'It needs a few of each kind before it has an opinion.');
+  el('miniDetail').textContent = `${learned} ${readiness}`;
+  el('miniInfoToggle').textContent = miniMe.on ? 'turn off' : 'turn on';
+}
+function toggleMiniInfo() {
+  const opening = !screenOpen('minime');
+  showScreen(opening ? 'minime' : null);
+  if (opening) paintMiniInfo();
+}
+function keepPill(keep) {
+  if (keep == null || !miniMe.on) return '';
+  const hue = Math.round(120 * keep);                       // red-ish at 0 … green at 1
+  return `<span class="keep" style="background:hsl(${hue} 60% 88%)" title="Mini-Me: how likely you are to keep this">${Math.round(100 * keep)}%</span>`;
+}
+
 // ---- 7. the screens' renderers: stats, the bench screen, the lean, settings -----------------------------------------
 async function renderStats() {
   const body = el('statsBody');
@@ -747,8 +811,11 @@ async function renderStats() {
   const rows = (stats.recent || []).map(kick => {
     const verdict = esc(kick.verdict || 'listening'), strength = esc(kick.strength);
     const since = kick.n_since ? ` · ${kick.n_since} song${kick.n_since === 1 ? '' : 's'} since` : '';
+    const selection = kick.selected_by === 'mini-me'
+      ? (kick.selection_changed ? ' · Mini-Me changed the pick' : ' · Mini-Me agreed with nearest')
+      : (kick.selected_by === 'manual' ? ' · picked from the bench' : '');
     return `<div class="kickRow"><span class="chip ${strength}">${strength}</span>
-      <div class="who"><div class="t">${esc(kick.artist)} — ${esc(kick.title)}</div><div class="d">asked ${fmt(kick.target_rel)} → landed ${fmt(kick.rel)} [${esc(kick.band || '?')}]${since}</div></div>
+      <div class="who"><div class="t">${esc(kick.artist)} — ${esc(kick.title)}</div><div class="d">asked ${fmt(kick.target_rel)} → landed ${fmt(kick.rel)} [${esc(kick.band || '?')}]${since}${selection}</div></div>
       <span class="v ${verdict}">${verdict}</span></div>`;
   }).join('');
   const kicks = `<div class="card"><h2>Kicks</h2><div class="kicks">${rows || '<div class="empty">no kicks yet — wind up the leg</div>'}</div></div>`;
@@ -788,7 +855,7 @@ function poolBand(band, entry, lean) {
   const more = entry.picks.length > shown.length ? `<div class="empty">+${entry.picks.length - shown.length} more, farther out</div>` : '';
   const rows = shown.map(pick => `<div class="poolRow pick" onclick="sendOn(${Number(pick.cand_id)})" title="send this one on now">
       <div class="who"><div class="t">${esc(pick.artist)} — ${esc(pick.title)}</div><div class="d">${esc(pick.direction || '')}</div></div>
-      <span class="rel" title="cosine distance from your listening now · ${pick.rel.toFixed(2)} on your ruler">${pick.distance.toFixed(2)}</span></div>`).join('');
+      ${keepPill(pick.keep)}<span class="rel" title="cosine distance from your listening now · ${pick.rel.toFixed(2)} on your ruler">${pick.distance.toFixed(2)}</span></div>`).join('');
   let emptyText = 'none of the picks lands at this distance from you yet — the brain is told where its picks landed and asked again';
   if (entry.state === 'building') emptyText = '<span class="pulse">scouting — asking the brain…</span>';
   if (entry.state === 'capped') emptyText = `Inside “${esc(lean)}” nothing measures this far for you. The brain was told twice where its picks landed; everything in the lean measures closer than this. Widen the lean to reach it.`;
@@ -798,7 +865,7 @@ function poolBand(band, entry, lean) {
 function renderPool(pool) {
   const bench = pool.bench || {};
   el('poolCount').textContent = pool.ready ? `${pool.ready} waiting` : '';
-  const intro = `<div class="card"><p style="margin:0">The subs: songs the brain scouted and the ruler measured while you listened, warmed up so a kick never waits. Each sits on the tap, kick or boot bench by where it actually lands on your ruler, whatever the brain intended. A kick sends on the one nearest your wind-up; the rest keep waiting. Numbers are cosine distance from what you are listening to now (0 identical, 1 unrelated); your typical step is ${ui.scale.typical_step.toFixed(2)}, far for you ${ui.scale.far.toFixed(2)}.</p></div>`;
+  const intro = `<div class="card"><p style="margin:0">The subs: songs the brain scouted and the ruler measured while you listened, warmed up so a kick never waits. Each sits on the tap, kick or boot bench by where it actually lands on your ruler, whatever the brain intended. A kick sends on the one nearest your wind-up — or, with Mini-Me on, the one among those near it you are most likely to keep (its score is the coloured pill); the rest keep waiting. Numbers are cosine distance from what you are listening to now (0 identical, 1 unrelated); your typical step is ${ui.scale.typical_step.toFixed(2)}, far for you ${ui.scale.far.toFixed(2)}.</p></div>`;
   el('poolBody').innerHTML = intro + BAND_NAMES.map(band => poolBand(band, bench[band] || { picks: [], state: 'empty' }, pool.lean || '')).join('');
 }
 
@@ -955,6 +1022,7 @@ async function transport(command) {
 const TICK_MS = 2500;
 async function tick() {
   let status;
+  const requestedAt = Date.now();
   try { status = await api.status(); } catch (error) { showLog(error); return; }
   if (!status.ready) {
     setMarqueeText(el('npTitle'), status.error || 'loading the ears…');
@@ -970,6 +1038,7 @@ async function tick() {
     ui.brainLoaded = true;
   }
   if (status.spotify) paintCredentials(status.spotify);
+  if (status.pool && status.pool.minime) paintMiniMe(status.pool.minime, requestedAt);
   if (!screenOpen('lean')) { ui.lean = status.lean || ''; paintLeanButton(ui.lean); }
   showLog((status.log || []).slice(-1)[0] || '');
   if (!ui.busy) renderCard(status);

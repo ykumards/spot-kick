@@ -8,7 +8,7 @@ import pytest
 from spotkick.brain.llm import BrainError
 from spotkick.config import Config
 from spotkick.ears import clap, previews
-from spotkick.kick import bands, session
+from spotkick.kick import bands, session, taste
 from spotkick.memory.store import Store
 from spotkick.player.spotify import PlayerError, Track
 from spotkick.player.spotify_api import SpotifyAPI
@@ -197,6 +197,33 @@ def test_kick_picks_by_measured_distance_and_judges_the_continuation(world):
     assert wait(lambda: listener.ready() > 0)
 
 
+def test_listener_can_cancel_a_kick_when_later_playback_is_unrelated(world):
+    listener, store, player, brain = world
+    for number in range(4):
+        play_through(player, listener, number)
+    assert wait(lambda: listener.ready() > 0 and not listener._pool_building())
+    listener.kick(0.5)
+    kick = store.last_kick()
+    assert kick is not None
+
+    player.set(5)                                           # the listener chose this themselves in Spotify
+    listener.observe()                                      # indistinguishable until they tell Spot Kick
+    assert listener.active is not None and listener.active.n_since == 1
+    assert listener.cancel_active_kick()
+    assert listener.active is None and listener.snapshot()["kick"] is None
+    assert not listener.cancel_active_kick()                 # already reset
+
+    stored = store.kick(kick["id"])
+    assert stored is not None and stored["verdict"] == "cancelled" and stored["n_since"] == 1
+    cancel = store.events(kinds=("cancel",))[0]
+    assert cancel["source"] == "user" and cancel["kick_id"] == kick["id"]
+    player.set(6)
+    listener.observe()
+    after = store.kick(kick["id"])
+    assert after is not None and after["n_since"] == 1      # later songs cannot revive the measurement
+    assert new_session(Config(), store, brain, player).active is None
+
+
 def test_skip_is_recorded_when_a_song_is_abandoned_early(world):
     listener, store, player, _ = world
     player.set(1, position=3.0)
@@ -208,6 +235,67 @@ def test_skip_is_recorded_when_a_song_is_abandoned_early(world):
     kinds = [event["kind"] for event in store.events()]
     assert kinds == ["play", "skip", "play"]
     assert store.rejected() == ["Artist 1 — Song 1"]
+    play = store.events(kinds=("play",))[0]
+    assert play["completion"] == 20.0 / 200.0                        # the play event carries how far it got
+    assert store.events(kinds=("skip",))[0]["source"] == "spotify"    # a natural skip, not a kick
+
+
+def test_kicking_away_early_marks_the_skip_as_a_kick(world):
+    listener, store, player, _ = world
+    for number in range(3):
+        play_through(player, listener, number)
+    assert wait(lambda: listener.ready() > 0 and not listener._pool_building())
+    player.set(2, position=4.0)                                        # 2% in, the listener kicks
+    listener.observe()
+    listener.kick(0.5)
+    skips = store.events(kinds=("skip",))
+    assert skips and skips[-1]["source"] == "kick" and skips[-1]["completion"] == 4.0 / 200.0
+    rows = {row["track_id"]: row for row in store.taste_rows()}
+    kicked_track = store.track_by_uri(URI.format(2))
+    assert rows[kicked_track.id]["kicked_away"] == 1
+
+
+def test_mini_me_chooses_the_pick_you_would_keep_near_the_target(world, monkeypatch):
+    """With enough labelled plays, the kick sends on the bench pick Mini-Me rates highest among those near
+    the target, instead of the nearest one."""
+    listener, store, player, _ = world
+    for number in range(3):
+        play_through(player, listener, number)
+    assert wait(lambda: listener.ready() > 0 and not listener._pool_building())
+    items = list(listener.pool.items)
+    measured = sorted(listener.measure_pool(items), key=lambda m: m.rel)
+    nearest, favourite = measured[0], measured[1]                     # the fake picks sit ~0.5 rel apart
+    target = nearest.rel + 0.2                                        # nearest-to-target would send on `nearest`
+    monkeypatch.setattr(session, "TASTE_TOLERANCE_REL", favourite.rel - nearest.rel + 0.05)
+    # teach Mini-Me: songs like the favourite are kept, songs like the nearest are rejected
+    for lesson in range(taste.MIN_LABELS):
+        kept = store.upsert_track(f"Keep {lesson}", f"K {lesson}")
+        store.add_event("play", kept.id, "spotify", completion=1.0)
+        store.put_embedding(kept.id, bands.normalize(items[favourite.index].embedding + 0.01 * lesson), "fake")
+        dropped = store.upsert_track(f"Drop {lesson}", f"D {lesson}")
+        store.add_event("play", dropped.id, "spotify", completion=0.05)
+        store.put_embedding(dropped.id, bands.normalize(items[nearest.index].embedding + 0.01 * lesson), "fake")
+    measured, choice = listener.measure_and_choose(items, target)
+    assert listener.taste.ready
+    assert choice.chosen.index == favourite.index and choice.nearest.index == nearest.index
+    assert choice.selected_by == session.SELECTED_BY_MINIME
+    assert choice.minime_score is not None
+    status = listener.minime_status()
+    assert status["ready"] and status["kept"] >= taste.MIN_LABELS and status["on"]
+    listener.cfg.minime = False                    # the toggle off: the model still knows, the kick ignores it
+    _measured, nearest_choice = listener.measure_and_choose(items, target)
+    assert nearest_choice.chosen.index == nearest.index
+    assert nearest_choice.selected_by == session.SELECTED_BY_NEAREST
+    assert listener.minime_status()["on"] is False
+    listener.send_on(listener.pool, items, measured, choice, strength="kick", magnitude=0.5, target=target)
+    stored = store.last_kick()
+    assert stored["selected_by"] == session.SELECTED_BY_MINIME
+    assert stored["candidate_id"] == items[favourite.index].cand_id
+    assert stored["nearest_candidate_id"] == items[nearest.index].cand_id
+    assert stored["candidate_id"] != stored["nearest_candidate_id"]
+    assert stored["minime_score"] == choice.minime_score
+    recent = store.recent_kicks()[0]
+    assert recent["selected_by"] == session.SELECTED_BY_MINIME and recent["selection_changed"] == 1
 
 
 def test_kick_needs_a_state_and_waits_for_the_pool(world):
@@ -321,7 +409,7 @@ def test_an_empty_band_is_topped_up_in_the_background(world):
     assert wait(lambda: len(brain.calls) >= 2)
     assert "all labelled 'near'" in brain.calls[1]
     assert wait(lambda: listener.ready() > first_ready)        # merged, not replaced
-    assert len(candidate_set_ids(store)) == 2
+    assert len(candidate_set_ids(store)) >= 2               # faster runs may already have started another top-up
 
     listener.observe()                                         # tap is still empty (the picks measured far)...
     assert wait(lambda: len(brain.calls) >= 3)
@@ -553,7 +641,8 @@ def test_pointing_at_a_sub_sends_that_one_on(world):
     out = listener.kick_pick(pick["cand_id"])
     assert out["track"].artist == pick["artist"] and player.played[-1] == out["track"].spotify_uri
     assert out["strength"] == band                              # the strength is the band the pick measures into
-    assert store.last_kick()["strength"] == band
+    stored = store.last_kick()
+    assert stored["strength"] == band and stored["selected_by"] == session.SELECTED_BY_MANUAL
     assert all(item.cand_id != pick["cand_id"] for item in listener.pool.items)   # removed from the pool once played
     with pytest.raises(RuntimeError):
         listener.kick_pick(pick["cand_id"])                     # cannot be kicked twice

@@ -29,7 +29,7 @@ from ..ears import clap, previews
 from ..memory.store import Store, Track
 from ..player import spotify
 from ..player.spotify_api import NOT_CONFIGURED_MESSAGE, SpotifyAPI
-from . import bands
+from . import bands, taste
 
 if TYPE_CHECKING:
     import requests
@@ -51,6 +51,10 @@ BAND_MISSES_KEPT = 12          # measured misses remembered per band and fed bac
 LEAN_CAP_TRIES = 2             # consecutive misses under a lean before the band is reported as capped by the lean
 REACH_FOR_BAND = {"tap": "near", "kick": "adjacent", "boot": "far"}
 SKIP_COMPLETION = 0.3          # leaving a song before this fraction of it counts as a skip
+TASTE_TOLERANCE_REL = 0.25     # bench picks this close to the target are all fair; Mini-Me chooses among them
+SELECTED_BY_NEAREST = "nearest"
+SELECTED_BY_MINIME = "mini-me"
+SELECTED_BY_MANUAL = "manual"
 WARM_STATE_RECENT_ROWS = 30    # store rows scanned to rebuild the listener state ...
 WARM_STATE_PLAYS = 20          # ... and how many plays of those are replayed into it
 MATERIALIZE_WORKERS = 6        # candidates resolved/embedded in parallel
@@ -90,6 +94,16 @@ class Pool:
     for_track_id: int | None
     built_at: float
     items: list[PoolItem] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PoolChoice:
+    """A chosen measurement and the evidence needed to audit how it was chosen."""
+
+    chosen: bands.Measured
+    nearest: bands.Measured
+    selected_by: str
+    minime_score: float | None
 
 
 @dataclass
@@ -154,6 +168,8 @@ class KickSession:
         self._last_uri: str | None = None
         self._last_track: spotify.Track | None = None
         self._max_pos = 0.0
+        self.taste = taste.TasteModel()
+        self._taste_fit_on = -1          # events count the model was last fit on; refit only when the log grew
         self.warm_state()
         self.skip_already_logged_song()
         self.restore_active_kick()
@@ -189,6 +205,8 @@ class KickSession:
         """Restore the active kick from the store when the last kick is recent enough to still be judged."""
         kick = self.store.last_kick()
         if not kick or time.time() - kick["t"] > max_age_s:
+            return
+        if kick["verdict"] == "cancelled":
             return
         if kick["pre_state"] is None or kick["kick_vec"] is None:
             return
@@ -273,17 +291,20 @@ class KickSession:
         self.maybe_prefetch()
         return {"track": playing, **self.snapshot()}
 
-    def judge_previous_track(self) -> None:
-        """Record a skip event for the track that just ended, if the listener left it early."""
+    def judge_previous_track(self, *, by_kick: bool = False) -> None:
+        """The track that just ended: record how much of it played, and a skip if the listener left it early.
+        A skip caused by a kick is marked as such — kicking away is an active rejection."""
         previous = self._last_track
         if previous is None or previous.duration_s <= 0:
             return
-        completion = self._max_pos / previous.duration_s
-        if completion >= SKIP_COMPLETION:
-            return
+        completion = min(1.0, self._max_pos / previous.duration_s)
         track = self.store.track_by_uri(previous.uri)
-        if track is not None:
-            self.store.add_event("skip", track.id, "spotify", skip_at_s=self._max_pos, completion=completion)
+        if track is None:
+            return
+        self.store.set_play_completion(track.id, completion)
+        if completion < SKIP_COMPLETION:
+            source = "kick" if by_kick else "spotify"
+            self.store.add_event("skip", track.id, source, skip_at_s=self._max_pos, completion=completion)
 
     def ingest_track(self, playing: spotify.Track) -> None:
         """Record a newly playing track in the store and the state, and judge the active kick by it."""
@@ -300,10 +321,7 @@ class KickSession:
         self.store.add_event("play", track.id, source, popularity=playing.popularity, kick_id=self._active_kick_id())
         if kick is None:
             return
-        if is_kick_track:
-            if playing.popularity is not None:
-                self.store.update_kick(kick.id, popularity=playing.popularity)
-        elif embedding is not None:
+        if not is_kick_track and embedding is not None:
             self.judge_active_kick(kick, playing)
 
     def judge_active_kick(self, kick: ActiveKick, playing: spotify.Track) -> None:
@@ -320,9 +338,23 @@ class KickSession:
         kick.n_since += 1
         kick.followed = bands.followed(kick.pre, kick.kick_vec, now)
         verdict = bands.verdict(kick.followed, kick.n_since)
-        self.store.update_kick(kick.id, followed=kick.followed, verdict=verdict, verdict_at=time.time(),
-                               n_since=kick.n_since)
+        self.store.update_kick(kick.id, followed=kick.followed, verdict=verdict, n_since=kick.n_since)
         self.log(f"since kick #{kick.id}: {playing.artist} — {playing.name} · followed {kick.followed:.2f} → {verdict}")
+
+    def cancel_active_kick(self) -> bool:
+        """Stop judging the active kick because the listener says later playback is unrelated.
+
+        The measurements already observed stay in the log, but the kick is marked cancelled so analysis cannot
+        mistake them for a recommender response. The cancel event records when the listener made that call.
+        """
+        kick = self.active
+        if kick is None:
+            return False
+        self.store.update_kick(kick.id, verdict="cancelled")
+        self.store.add_event("cancel", None, "user", kick_id=kick.id)
+        self.active = None
+        self.log(f"kick #{kick.id} cancelled: later playback is not related")
+        return True
 
     def embedding_for(self, track: Track) -> np.ndarray | None:
         """Return the track's embedding from the store, computing it from a preview when necessary. None on failure."""
@@ -408,21 +440,37 @@ class KickSession:
         with self._pool_lock:
             items = list(self.pool.items) if self.pool is not None else []
         picks: dict[str, list[dict]] = {band: [] for band in bands.STRENGTHS}
-        for item in items:
+        self.refit_taste()
+        keeps = self.taste.predict(np.stack([item.embedding for item in items])) if items and self.taste.ready else None
+        for position, item in enumerate(items):
             distance = self.state.distance(item.embedding)
             rel = self.state.rel(distance)
             band = self.state.band_for(distance)
+            keep = float(keeps[position]) if keeps is not None else None
             picks[band].append({"cand_id": item.cand_id, "artist": item.track.artist, "title": item.track.title,
-                                "rel": rel, "distance": distance, "direction": item.direction, "why": item.why})
+                                "rel": rel, "distance": distance, "direction": item.direction, "why": item.why,
+                                "keep": keep})
         building = self._pool_building()
         now = time.time()
         result = {}
         for band in bands.STRENGTHS:
             ordered = sorted(picks[band], key=lambda pick: pick["distance"])
-            would_play = min(picks[band], key=lambda pick: abs(pick["rel"] - bands.TARGET_REL[band]), default=None)
+            would_play = self.would_play(picks[band], bands.TARGET_REL[band])
             result[band] = {"picks": ordered, "would_play": would_play,
                             "state": self.band_state(band, len(ordered), building, now)}
         return result
+
+    def would_play(self, picks: list[dict], target: float) -> dict | None:
+        """The pick a kick at this target would send on now — the kick's own rule, so the bench tells the truth."""
+        if not picks:
+            return None
+        nearest = min(picks, key=lambda pick: abs(pick["rel"] - target))
+        if not self.cfg.minime or not self.taste.ready:
+            return nearest
+        near = [pick for pick in picks if abs(pick["rel"] - target) <= TASTE_TOLERANCE_REL and pick["keep"] is not None]
+        if not near:
+            return nearest
+        return max(near, key=lambda pick: pick["keep"])
 
     def band_state(self, band: str, count: int, building: bool, now: float) -> str:
         """Return the band's state: building, ready, capped, resting or empty.
@@ -629,13 +677,67 @@ class KickSession:
                                         band=measurement.band)
         return measured
 
-    def measure_and_choose(self, items: list[PoolItem], target: float) -> tuple[list[bands.Measured], bands.Measured]:
-        """Measure the items and choose the one nearest ``target``. Raises RuntimeError for an empty pool."""
+    def measure_and_choose(self, items: list[PoolItem], target: float) -> tuple[list[bands.Measured], PoolChoice]:
+        """Measure the items and choose one for ``target``: among those landing within TASTE_TOLERANCE_REL of it,
+        the one Mini-Me thinks you are most likely to keep; the nearest when Mini-Me is off or nothing is close.
+        Raises RuntimeError for an empty pool."""
         measured = self.measure_pool(items)
-        best = bands.choose(measured, target)
-        if best is None:
+        nearest = bands.choose(measured, target)
+        if nearest is None:
             raise RuntimeError(NO_CANDIDATES_MESSAGE)
-        return measured, best
+        self.refit_taste()
+        if not self.cfg.minime or not self.taste.ready:
+            score = self.keep_probability(items[nearest.index].embedding)
+            return measured, PoolChoice(nearest, nearest, SELECTED_BY_NEAREST, score)
+        near = [measurement for measurement in measured if abs(measurement.rel - target) <= TASTE_TOLERANCE_REL]
+        if not near:
+            score = self.keep_probability(items[nearest.index].embedding)
+            return measured, PoolChoice(nearest, nearest, SELECTED_BY_NEAREST, score)
+        keep = self.taste.predict(np.stack([items[measurement.index].embedding for measurement in near]))
+        chosen = near[int(np.argmax(keep))]
+        minime_score = float(keep.max())
+        self.log(f"mini-me: {minime_score:.0%} you keep {items[chosen.index].track.label} "
+                 f"(best of {len(near)} near the target, {self.taste.n_examples} plays learned)")
+        return measured, PoolChoice(chosen, nearest, SELECTED_BY_MINIME, minime_score)
+
+    def refit_taste(self) -> None:
+        """Refit Mini-Me's taste model when the log has grown since the last fit."""
+        n_events = self.store.count_rows("events")
+        if n_events == self._taste_fit_on:
+            return
+        self._taste_fit_on = n_events
+        self.taste.fit(self.taste_examples())
+
+    def taste_examples(self) -> list[taste.Example]:
+        rows = self.store.taste_rows()
+        embeddings = self.store.embeddings([row["track_id"] for row in rows])
+        examples = []
+        for row in rows:
+            vector = embeddings.get(row["track_id"])
+            if vector is None:
+                continue
+            example = taste.label_for_play(row["completion"], loved=bool(row["loved"]),
+                                           left_by_kick=bool(row["kicked_away"]))
+            if example is not None:
+                example.embedding = vector
+                examples.append(example)
+        return examples
+
+    def minime_status(self) -> dict:
+        """What Mini-Me knows: on/off, whether the model is fitted, and how much it has learned from."""
+        self.refit_taste()
+        examples = self.taste_examples()
+        kept = sum(1 for example in examples if example.label >= 0.5)
+        rejected = len(examples) - kept
+        return {"on": self.cfg.minime, "ready": self.taste.ready, "examples": len(examples), "kept": kept,
+                "rejected": rejected, "needed": taste.MIN_LABELS}
+
+    def keep_probability(self, embedding: np.ndarray) -> float | None:
+        """Mini-Me's P(you keep this), or None while the model is off."""
+        self.refit_taste()
+        if not self.taste.ready:
+            return None
+        return float(self.taste.predict(embedding[None, :])[0])
 
     def pool_snapshot(self) -> tuple[Pool, list[PoolItem]]:
         """Return the pool and a copy of its items, taken under the lock. Raises RuntimeError for an empty pool."""
@@ -650,12 +752,12 @@ class KickSession:
         pool, items = self.pool_snapshot()
         strength = bands.strength_for(magnitude)
         target = bands.target_for(magnitude)
-        measured, best = self.measure_and_choose(items, target)
-        if abs(best.rel - target) > OFF_TARGET_WARN_REL:
+        measured, choice = self.measure_and_choose(items, target)
+        if abs(choice.chosen.rel - target) > OFF_TARGET_WARN_REL:
             # The nearest measured pick plays now and the panel reports where it landed; the pool is topped up in
             # the background. Waiting for the brain here would cost a minute per kick.
-            self.log(f"kick lands off target: best rel {best.rel:.2f} vs {target:.2f} among {len(items)}")
-        return self.send_on(pool, items, measured, best, strength=strength, magnitude=magnitude, target=target)
+            self.log(f"kick lands off target: best rel {choice.chosen.rel:.2f} vs {target:.2f} among {len(items)}")
+        return self.send_on(pool, items, measured, choice, strength=strength, magnitude=magnitude, target=target)
 
     def kick_pick(self, cand_id: int) -> dict:
         """Kick one named candidate. Its strength is the band it measures into."""
@@ -665,9 +767,14 @@ class KickSession:
         if index is None:
             raise RuntimeError("that sub has left the bench; pick another")
         measured = self.measure_pool(items)
-        best = measured[index]
-        strength = best.band
-        return self.send_on(pool, items, measured, best, strength=strength,
+        chosen = measured[index]
+        nearest = bands.choose(measured, bands.TARGET_REL[chosen.band])
+        if nearest is None:
+            raise RuntimeError(NO_CANDIDATES_MESSAGE)
+        choice = PoolChoice(chosen, nearest, SELECTED_BY_MANUAL,
+                            self.keep_probability(items[chosen.index].embedding))
+        strength = chosen.band
+        return self.send_on(pool, items, measured, choice, strength=strength,
                             magnitude=bands.STRENGTH_MAGNITUDE[strength], target=bands.TARGET_REL[strength])
 
     def check_can_kick(self) -> None:
@@ -684,7 +791,7 @@ class KickSession:
         pool: Pool,
         items: list[PoolItem],
         measured: list[bands.Measured],
-        best: bands.Measured,
+        choice: PoolChoice,
         *,
         strength: str,
         magnitude: float,
@@ -693,20 +800,21 @@ class KickSession:
         """Play the chosen candidate, record the kick, and make it the active kick."""
         origin = self.state.vector
         assert origin is not None  # check_can_kick / kick guard this before choosing
-        chosen = items[best.index]
+        chosen = items[choice.chosen.index]
         pre = origin.copy()
         played = self.player.play_and_confirm(chosen.uri)
-        kick_id = self.store.add_kick(strength=strength, magnitude=float(magnitude), target_rel=target,
-                                      direction=chosen.direction, why=chosen.why, track_id=chosen.track.id,
-                                      distance=best.distance, rel=best.rel, band=best.band, pre_state=pre,
-                                      kick_vec=chosen.embedding, popularity=played.popularity)
-        self.store.update_candidate(chosen.cand_id, chosen=1, kick_id=kick_id)
+        nearest_candidate_id = items[choice.nearest.index].cand_id
+        kick_id = self.store.add_kick(candidate_id=chosen.cand_id, selected_by=choice.selected_by,
+                                      nearest_candidate_id=nearest_candidate_id, minime_score=choice.minime_score,
+                                      strength=strength, magnitude=float(magnitude), target_rel=target, pre_state=pre)
+        self.store.update_candidate(chosen.cand_id, chosen=1)
         self.store.add_event("kick", chosen.track.id, "kick", kick_id=kick_id, popularity=played.popularity)
         self.active = ActiveKick(id=kick_id, pre=pre, kick_vec=chosen.embedding, track_uri=chosen.uri)
         self.follow_through(chosen, played, kick_id)
         self._drop_from_pool(pool, chosen)
         summary = (f"kick #{kick_id} {strength} (target {target:.2f}) → {chosen.track.label} · "
-                   f"measured {best.distance:.3f} rel {best.rel:.2f} [{best.band}] · {chosen.direction}")
+                   f"measured {choice.chosen.distance:.3f} rel {choice.chosen.rel:.2f} [{choice.chosen.band}] · "
+                   f"selected by {choice.selected_by} · {chosen.direction}")
         self.log(summary)
         candidates = []
         for item, measurement in zip(items, measured):
@@ -714,12 +822,14 @@ class KickSession:
                                "distance": measurement.distance, "rel": measurement.rel, "band": measurement.band,
                                "chosen": item is chosen})
         return {"kick_id": kick_id, "strength": strength, "target_rel": target, "track": chosen.track,
-                "direction": chosen.direction, "why": chosen.why, "distance": best.distance, "rel": best.rel,
-                "band": best.band, "candidates": candidates}
+                "keep": choice.minime_score, "selected_by": choice.selected_by,
+                "selection_changed": chosen.cand_id != nearest_candidate_id,
+                "direction": chosen.direction, "why": chosen.why, "distance": choice.chosen.distance,
+                "rel": choice.chosen.rel, "band": choice.chosen.band, "candidates": candidates}
 
     def follow_through(self, chosen: PoolItem, played: spotify.Track, kick_id: int) -> None:
         """Record the kicked track as playing, so the log has it even if no observation follows."""
-        self.judge_previous_track()
+        self.judge_previous_track(by_kick=True)
         self.state.update(chosen.embedding, counts_for_scale=False)
         self.store.add_event("play", chosen.track.id, "kick", popularity=played.popularity, kick_id=kick_id)
         self._last_uri = chosen.uri
@@ -781,7 +891,7 @@ class KickSession:
         step, far = self.state.scale()
         return {"state": {"n": len(self.state.history), "typical_step": step, "far": far},
                 "pool": {"ready": self.ready(), "building": self._pool_building(), "bands": self.pool_bands(),
-                         "bench": self.bench(), "lean": self.cfg.lean},
+                         "bench": self.bench(), "lean": self.cfg.lean, "minime": self.minime_status()},
                 "kick": self._kick_snapshot()}
 
     def spotify_picks_since(self, kick: ActiveKick) -> list[dict]:
@@ -812,7 +922,13 @@ class KickSession:
         if not stored:
             return None
         chosen = self.spotify_picks_since(kick)
+        nearest_candidate_id = stored["nearest_candidate_id"]
+        selection_changed = None
+        if nearest_candidate_id is not None:
+            selection_changed = stored["candidate_id"] != nearest_candidate_id
         return {"id": kick.id, "strength": stored["strength"], "direction": stored["direction"] or "",
+                "keep": stored["minime_score"], "selected_by": stored["selected_by"],
+                "selection_changed": selection_changed,
                 "track": self.store.track(stored["track_id"]), "distance": stored["distance"], "rel": stored["rel"],
                 "band": stored["band"], "popularity": stored["popularity"], "n_since": kick.n_since,
                 "followed": kick.followed, "verdict": bands.verdict(kick.followed, kick.n_since),

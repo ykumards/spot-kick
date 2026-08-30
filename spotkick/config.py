@@ -21,6 +21,7 @@ class Config:
     spotify_client_id: str = ""         # the developer's Spotify app: resolves names to track ids
                                         # (its secret lives in the Keychain, or SPOTKICK_SPOTIFY_CLIENT_SECRET)
     lean: str = ""                      # free text every pick stays inside (a mood, a language, an era); empty = none
+    minime: bool = True                 # let Mini-Me (the taste model) choose among bench picks near the target
     n_candidates: int = 6
     alpha: float = 0.7                  # listener-state EWMA
 

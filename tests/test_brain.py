@@ -1,6 +1,7 @@
 import json
 import time
 
+import numpy as np
 import pytest
 
 from spotkick.brain import cli
@@ -28,18 +29,18 @@ def seeded_store() -> Store:
     store.add_event("play", fela.id, "spotify", t=now - 3000)
     store.add_event("skip", stereolab.id, "spotify", t=now - 500, skip_at_s=20)
     store.add_event("love", fela.id, "user", t=now - 100)
+    candidate_id = store.add_candidates(
+        "seed-kick",
+        [{"reach": "far", "direction": "brazilian soul", "artist": ed_motta.artist,
+          "title": ed_motta.title, "why": ""}],
+    )[0]
+    store.update_candidate(candidate_id, track_id=ed_motta.id, distance=0.4, rel=0.7, band="kick", chosen=1)
     kick_id = store.add_kick(
+        candidate_id=candidate_id,
         strength="kick",
         magnitude=0.5,
         target_rel=0.75,
-        direction="brazilian soul",
-        why="",
-        track_id=ed_motta.id,
-        distance=0.4,
-        rel=0.7,
-        band="kick",
-        pre_state=None,
-        kick_vec=None,
+        pre_state=np.zeros(4),
         t=now - 50,
     )
     store.add_event("kick", ed_motta.id, "kick", kick_id=kick_id, t=now - 50)

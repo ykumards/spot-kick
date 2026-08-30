@@ -1,8 +1,8 @@
 """The SQLite store; the only module that touches the database.
 
-One file holds everything known about one listener: tracks, embeddings, events (plays, skips, loves, kicks),
-kicks with their measurements and verdicts, and every candidate the brain proposed. The brain never reads the
-file; it receives the capped context queries at the end of this module.
+One file holds everything known about one listener: tracks, embeddings, observed events, every candidate the brain
+proposed, and kicks linking one selected candidate to its requested intervention and outcome. The brain never reads
+the file; it receives the capped context queries at the end of this module.
 
 One connection is shared across threads; every statement runs under one lock.
 """
@@ -31,32 +31,11 @@ CREATE TABLE IF NOT EXISTS embeddings (
   track_id INTEGER PRIMARY KEY REFERENCES tracks(id),
   model TEXT NOT NULL, dim INTEGER NOT NULL, vec BLOB NOT NULL, created_at REAL NOT NULL
 );
-CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY,
-  t REAL NOT NULL,
-  kind TEXT NOT NULL,                       -- play | partial | skip | love | unlove | kick
-  track_id INTEGER REFERENCES tracks(id),
-  source TEXT NOT NULL,                     -- spotify | kick | user
-  completion REAL, skip_at_s REAL,          -- for a skip: how far in, and how far through, the listener left
-  kick_id INTEGER, popularity INTEGER
-);
-CREATE INDEX IF NOT EXISTS events_t ON events(t);
-CREATE INDEX IF NOT EXISTS events_track ON events(track_id, kind);
-CREATE TABLE IF NOT EXISTS kicks (
-  id INTEGER PRIMARY KEY,
-  t REAL NOT NULL,
-  strength TEXT NOT NULL, magnitude REAL NOT NULL, target_rel REAL,
-  direction TEXT, why TEXT, track_id INTEGER REFERENCES tracks(id),
-  distance REAL, rel REAL, band TEXT, popularity INTEGER,
-  pre_state BLOB, kick_vec BLOB,
-  followed REAL, verdict TEXT, verdict_at REAL, n_since INTEGER NOT NULL DEFAULT 0
-);
 CREATE TABLE IF NOT EXISTS candidates (
   id INTEGER PRIMARY KEY,
   t REAL NOT NULL,
   set_id TEXT NOT NULL,                     -- one brain call = one set
-  for_track_id INTEGER,                     -- what was playing when the set was requested
-  kick_id INTEGER,                          -- filled when a set member is kicked
+  for_track_id INTEGER REFERENCES tracks(id), -- what was playing when the set was requested
   track_id INTEGER REFERENCES tracks(id),
   reach TEXT, direction TEXT, artist TEXT NOT NULL, title TEXT NOT NULL, why TEXT,
   distance REAL, rel REAL, band TEXT,       -- measured at selection time
@@ -64,36 +43,62 @@ CREATE TABLE IF NOT EXISTS candidates (
   lean TEXT NOT NULL DEFAULT ''             -- the lean the set was asked under; the library only reuses a match
 );
 CREATE INDEX IF NOT EXISTS candidates_set ON candidates(set_id);
+CREATE TABLE IF NOT EXISTS kicks (
+  id INTEGER PRIMARY KEY,
+  t REAL NOT NULL,
+  candidate_id INTEGER NOT NULL UNIQUE REFERENCES candidates(id),
+  selected_by TEXT NOT NULL CHECK(selected_by IN ('nearest','mini-me','manual','legacy')),
+  nearest_candidate_id INTEGER NOT NULL REFERENCES candidates(id), -- distance-only counterfactual
+  minime_score REAL,                         -- frozen score for the chosen candidate at selection time
+  strength TEXT NOT NULL, magnitude REAL NOT NULL, target_rel REAL NOT NULL,
+  pre_state BLOB NOT NULL,
+  followed REAL, verdict TEXT, n_since INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY,
+  t REAL NOT NULL,
+  kind TEXT NOT NULL,                       -- play | partial | skip | love | unlove | kick | cancel
+  track_id INTEGER REFERENCES tracks(id),
+  source TEXT NOT NULL,                     -- spotify | kick | user
+  completion REAL, skip_at_s REAL,          -- for a skip: how far in, and how far through, the listener left
+  kick_id INTEGER REFERENCES kicks(id), popularity INTEGER
+);
+CREATE INDEX IF NOT EXISTS events_t ON events(t);
+CREATE INDEX IF NOT EXISTS events_track ON events(track_id, kind);
+CREATE INDEX IF NOT EXISTS events_kick ON events(kick_id, id);
 """
-
-# Columns and tables written by earlier versions that nothing reads; dropped on open. Rows are kept.
-DROPPED_COLUMNS = {
-    "tracks": ("itunes_id", "resolved_how"),
-    "events": ("hour", "weekday", "session_id", "position_in_session", "prev_track_id", "pick_p", "pick_score",
-               "ctx"),
-    "kicks": ("dose",),
-    "candidates": ("purpose", "proposed_uri", "home", "state", "affinity", "total", "p"),
-}
-DROPPED_TABLES = ("profile", "config", "meta")
 
 SECONDS_PER_DAY = 86400
 PLAY_KINDS_SQL = "('play','partial','skip')"
 SEEN_KINDS_SQL = "('play','partial','skip','kick','pick')"
 
-KICK_UPDATABLE_FIELDS = {"followed", "verdict", "verdict_at", "n_since", "popularity"}
-CANDIDATE_UPDATABLE_FIELDS = {"track_id", "distance", "rel", "band", "chosen", "rejected_reason", "kick_id"}
+KICK_UPDATABLE_FIELDS = {"followed", "verdict", "n_since"}
+CANDIDATE_UPDATABLE_FIELDS = {"track_id", "distance", "rel", "band", "chosen", "rejected_reason"}
 COUNTED_TABLES = ("tracks", "embeddings", "events", "kicks", "candidates")
 
 INSERT_TRACK_SQL = (
     "INSERT INTO tracks(artist,title,album,key,spotify_uri,preview_url,duration_s,created_at) VALUES (?,?,?,?,?,?,?,?)"
 )
 INSERT_EMBEDDING_SQL = "INSERT OR REPLACE INTO embeddings(track_id, model, dim, vec, created_at) VALUES (?,?,?,?,?)"
+# Completion is written onto the play event when the song ends (a skip row is added as well when it ended early).
+SET_PLAY_COMPLETION_SQL = (
+    "UPDATE events SET completion=? WHERE id = (SELECT MAX(id) FROM events WHERE track_id=? AND kind='play')"
+)
+# Mini-Me's training rows: every play with a known completion, whether the track is loved now, and whether the
+# listener ever kicked away from it.
+TASTE_ROWS_SQL = (
+    "SELECT e.track_id, e.completion,"
+    " EXISTS(SELECT 1 FROM events l WHERE l.track_id=e.track_id AND l.kind='love'"
+    "   AND l.id = (SELECT MAX(id) FROM events WHERE track_id=e.track_id AND kind IN ('love','unlove'))) AS loved,"
+    " EXISTS(SELECT 1 FROM events k WHERE k.track_id=e.track_id AND k.kind='skip' AND k.source='kick') AS kicked_away"
+    " FROM events e WHERE e.kind='play' AND e.completion IS NOT NULL ORDER BY e.t"
+)
 INSERT_EVENT_SQL = (
     "INSERT INTO events(t,kind,track_id,source,completion,skip_at_s,kick_id,popularity) VALUES (?,?,?,?,?,?,?,?)"
 )
 INSERT_KICK_SQL = (
-    "INSERT INTO kicks(t,strength,magnitude,target_rel,direction,why,track_id,distance,rel,band,popularity,"
-    "pre_state,kick_vec) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "INSERT INTO kicks(t,candidate_id,selected_by,nearest_candidate_id,minime_score,strength,magnitude,target_rel,"
+    "pre_state) VALUES (?,?,?,?,?,?,?,?,?)"
 )
 PLAYS_AFTER_SQL = (
     "SELECT e.*, t.artist, t.title FROM events e JOIN tracks t ON t.id=e.track_id"
@@ -108,7 +113,7 @@ INSERT_CANDIDATE_SQL = (
 LIBRARY_ROWS_SQL = (
     "SELECT * FROM candidates WHERE lean=? AND track_id IS NOT NULL AND rejected_reason IS NULL AND chosen=0"
     f" AND track_id NOT IN (SELECT track_id FROM events WHERE kind IN {SEEN_KINDS_SQL})"
-    " AND track_id NOT IN (SELECT track_id FROM kicks)"
+    " AND id NOT IN (SELECT candidate_id FROM kicks)"
     " ORDER BY t DESC, id DESC"
 )
 RECENT_PLAYS_SQL = (
@@ -133,15 +138,36 @@ REJECTED_SQL = (
     "SELECT t.artist, t.title FROM events e JOIN tracks t ON t.id=e.track_id"
     " WHERE e.kind IN ('skip','hate') AND e.t >= ? ORDER BY e.t DESC LIMIT ?"
 )
-DIRECTIONS_SQL = "SELECT direction FROM kicks WHERE direction IS NOT NULL ORDER BY t DESC LIMIT ?"
-KICKED_ARTISTS_SQL = "SELECT DISTINCT t.artist FROM kicks k JOIN tracks t ON t.id=k.track_id ORDER BY k.t DESC LIMIT ?"
+DIRECTIONS_SQL = (
+    "SELECT c.direction FROM kicks k JOIN candidates c ON c.id=k.candidate_id"
+    " WHERE c.direction IS NOT NULL ORDER BY k.t DESC LIMIT ?"
+)
+KICKED_ARTISTS_SQL = (
+    "SELECT DISTINCT t.artist FROM kicks k JOIN candidates c ON c.id=k.candidate_id"
+    " JOIN tracks t ON t.id=c.track_id ORDER BY k.t DESC LIMIT ?"
+)
+KICK_DETAILS_SQL = (
+    "SELECT k.*, c.track_id, c.direction, c.why, c.distance, c.rel, c.band, t.artist, t.title, em.vec AS kick_vec,"
+    " (SELECT e.popularity FROM events e WHERE e.kick_id=k.id AND e.kind='kick' ORDER BY e.id LIMIT 1) AS popularity"
+    " FROM kicks k JOIN candidates c ON c.id=k.candidate_id JOIN tracks t ON t.id=c.track_id"
+    " LEFT JOIN embeddings em ON em.track_id=c.track_id"
+)
 RECENT_KICKS_SQL = (
-    "SELECT k.id, k.t, k.strength, k.magnitude, k.target_rel, k.distance, k.rel, k.band, k.followed, k.verdict,"
-    " k.n_since, k.direction, t.artist, t.title FROM kicks k JOIN tracks t ON t.id=k.track_id"
+    "SELECT k.id, k.t, k.candidate_id, k.selected_by, k.nearest_candidate_id, k.minime_score,"
+    " CASE WHEN k.nearest_candidate_id IS NULL THEN NULL"
+    " ELSE (k.candidate_id != k.nearest_candidate_id) END AS selection_changed,"
+    " k.strength, k.magnitude, k.target_rel, k.followed, k.verdict, k.n_since,"
+    " c.track_id, c.direction, c.distance, c.rel, c.band, t.artist, t.title,"
+    " (SELECT e.popularity FROM events e WHERE e.kick_id=k.id AND e.kind='kick' ORDER BY e.id LIMIT 1) AS popularity"
+    " FROM kicks k JOIN candidates c ON c.id=k.candidate_id JOIN tracks t ON t.id=c.track_id"
     " ORDER BY k.t DESC LIMIT ?"
 )
 PLAY_COUNT_SQL = f"SELECT COUNT(*) AS n FROM events WHERE kind IN {PLAY_KINDS_SQL} AND source='spotify'"
-ADD_LEAN_COLUMN_SQL = "ALTER TABLE candidates ADD COLUMN lean TEXT NOT NULL DEFAULT ''"
+SELECTION_AUDIT_COLUMNS = {
+    "selected_by": "TEXT NOT NULL DEFAULT 'legacy' CHECK(selected_by IN ('nearest','mini-me','manual','legacy'))",
+    "nearest_candidate_id": "INTEGER REFERENCES candidates(id)",
+    "minime_score": "REAL",
+}
 
 
 def track_key(artist: str, title: str) -> str:
@@ -221,19 +247,18 @@ class Store:
         self.db.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             self.db.executescript(SCHEMA)
-            self.migrate()
+            self.add_selection_audit_columns()
 
-    def migrate(self) -> None:
-        """Bring a database from an earlier version up to SCHEMA: add missing columns, drop unused ones."""
-        if "lean" not in self.columns("candidates"):
-            self.db.execute(ADD_LEAN_COLUMN_SQL)
-        for table, dead_columns in DROPPED_COLUMNS.items():
-            present = self.columns(table)
-            for column in dead_columns:
-                if column in present:
-                    self.db.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-        for table in DROPPED_TABLES:
-            self.db.execute(f"DROP TABLE IF EXISTS {table}")
+    def add_selection_audit_columns(self) -> None:
+        """Add the in-v0 selection audit fields without discarding existing kicks.
+
+        Old rows are honestly marked ``legacy`` because a previous database did not distinguish a wind-up from
+        a bench click. Their unavailable nearest-distance counterfactual and Mini-Me score stay null.
+        """
+        present = self.columns("kicks")
+        for name, definition in SELECTION_AUDIT_COLUMNS.items():
+            if name not in present:
+                self.db.execute(f"ALTER TABLE kicks ADD COLUMN {name} {definition}")
 
     def columns(self, table: str) -> set[str]:
         return {column["name"] for column in self.db.execute(f"PRAGMA table_info({table})")}
@@ -356,6 +381,14 @@ class Store:
         values = (t or time.time(), kind, track_id, source, completion, skip_at_s, kick_id, popularity)
         return self._insert(INSERT_EVENT_SQL, values)
 
+    def set_play_completion(self, track_id: int, completion: float) -> None:
+        """Record how much of its latest play the track got, once the song has ended."""
+        self._run(SET_PLAY_COMPLETION_SQL, (completion, track_id))
+
+    def taste_rows(self) -> list[dict]:
+        """Plays with a known completion, plus loved / kicked-away flags: the raw material of the taste model."""
+        return [dict(row) for row in self._all(TASTE_ROWS_SQL)]
+
     def events(
         self, *, kinds: tuple[str, ...] | None = None, since: float | None = None, limit: int | None = None
     ) -> list[dict]:
@@ -380,34 +413,32 @@ class Store:
     def add_kick(
         self,
         *,
+        candidate_id: int,
+        selected_by: str = "nearest",
+        nearest_candidate_id: int | None = None,
+        minime_score: float | None = None,
         strength: str,
         magnitude: float,
-        target_rel: float | None,
-        direction: str | None,
-        why: str | None,
-        track_id: int,
-        distance: float | None,
-        rel: float | None,
-        band: str | None,
-        pre_state: np.ndarray | None,
-        kick_vec: np.ndarray | None,
-        popularity: int | None = None,
+        target_rel: float,
+        pre_state: np.ndarray,
         t: float | None = None,
     ) -> int:
+        if nearest_candidate_id is None:
+            nearest_candidate_id = candidate_id
         values = (
-            t or time.time(), strength, magnitude, target_rel, direction, why, track_id, distance, rel, band,
-            popularity, vector_to_blob(pre_state), vector_to_blob(kick_vec),
+            t or time.time(), candidate_id, selected_by, nearest_candidate_id, minime_score, strength, magnitude,
+            target_rel, vector_to_blob(pre_state),
         )
         return self._insert(INSERT_KICK_SQL, values)
 
     def kick(self, kick_id: int) -> dict | None:
-        row = self._one("SELECT * FROM kicks WHERE id=?", (kick_id,))
+        row = self._one(f"{KICK_DETAILS_SQL} WHERE k.id=?", (kick_id,))
         if row is None:
             return None
         return kick_from_row(row)
 
     def last_kick(self) -> dict | None:
-        row = self._one("SELECT * FROM kicks ORDER BY t DESC LIMIT 1")
+        row = self._one(f"{KICK_DETAILS_SQL} ORDER BY k.t DESC LIMIT 1")
         if row is None:
             return None
         return kick_from_row(row)
@@ -483,7 +514,10 @@ class Store:
         seen_event_sql = f"SELECT 1 FROM events WHERE track_id=? AND kind IN {SEEN_KINDS_SQL} LIMIT 1"
         if self._one(seen_event_sql, (track.id,)):
             return True
-        return self._one("SELECT 1 FROM kicks WHERE track_id=? LIMIT 1", (track.id,)) is not None
+        kicked_sql = (
+            "SELECT 1 FROM kicks k JOIN candidates c ON c.id=k.candidate_id WHERE c.track_id=? LIMIT 1"
+        )
+        return self._one(kicked_sql, (track.id,)) is not None
 
     # ------------------------------------------------ context queries (prompts)
     def recent(self, n: int = 12) -> list[dict]:
