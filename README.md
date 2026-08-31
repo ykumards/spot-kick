@@ -160,6 +160,10 @@ claude_model  = "sonnet"            # Claude Code's model
 
 ## How it works
 
+<p align="center">
+  <img src="docs/assets/spot-kick-schematic-dark.webp" width="900" alt="Spot Kick architecture: the UI, event database, Spotify adapters, coding-agent brain, audio preview pipeline, and CLAP embeddings around the Spot Kick engine">
+</p>
+
 The brain proposes song names and a direction while you listen. Spotify verifies each identity, iTunes supplies a
 30-second preview, and CLAP embeds the audio. The brain never sees those vectors and does not decide whether a song
 is near or far: Spot Kick measures and selects candidates in audio space.
