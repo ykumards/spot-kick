@@ -4,9 +4,6 @@ A tiny macOS experiment for nudging Spotify's recommendations.
 
 Wind up the menubar leg and let go. Spot Kick chooses one song at roughly the distance you asked for, plays it, then gets out of the way. Spotify chooses what follows. The panel watches the next songs and reports whether Spotify returned to your old neighborhood, bent toward the kick, or followed it.
 
-It is not a playlist generator, a Spotify replacement, or a claim about Spotify's internals. It is a way to make one
-measured intervention and watch what Spotify does next.
-
 <p align="center">
   <img src="docs/assets/spot-kick-demo.webp" width="376" alt="Spot Kick showing the wind-up leg, warmed tap, kick and boot bench, and Spotify controls">
 </p>
